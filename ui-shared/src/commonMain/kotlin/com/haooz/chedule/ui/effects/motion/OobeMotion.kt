@@ -1,0 +1,180 @@
+/*
+ * Animation timings are derived from HyperCeiler provision at commit
+ * 7266aaa0d698ad10795381c5bf23651c2e1719d0.
+ * Copyright (C) 2023-2026 HyperCeiler Contributions
+ * SPDX-License-Identifier: AGPL-3.0-only
+ */
+package com.haooz.chedule.ui.effects.motion
+
+// ⚠ 全部 internal 已开放为 public：跨模块（:androidApp 的 MainActivity/AppNavHost 等）读不到
+// internal 会编译报错（"Cannot access … it is internal in file"），勿改回 internal。
+
+import androidx.compose.animation.ContentTransform
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.Easing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.togetherWith
+import kotlin.math.PI
+import kotlin.math.cos
+import kotlin.math.exp
+import kotlin.math.pow
+import kotlin.math.sin
+import kotlin.math.sqrt
+
+const val OOBE_PAGE_TRANSITION_MILLIS = 350
+const val OOBE_EXIT_MILLIS = 360
+const val OOBE_HOME_ENTER_MILLIS = 619
+
+val OobeAccelerateDecelerateEasing = Easing { fraction ->
+    (cos((fraction + 1f) * PI).toFloat() / 2f) + 0.5f
+}
+
+
+// 余弦加速 先慢后快 Cosine In
+val OobeCosAccelerateEasing = Easing { fraction ->
+    1f - cos(fraction * PI.toFloat() / 2f)
+}
+
+val OobeSinOutEasing = Easing { fraction ->
+    sin(fraction * PI.toFloat() / 2f)
+}
+
+val OobeQuadraticOutEasing = Easing { fraction ->
+    1f - (1f - fraction) * (1f - fraction)
+}
+
+val OobeCubicOutEasing = Easing { fraction ->
+    1f - (1f - fraction) * (1f - fraction) * (1f - fraction)
+}
+
+val OobeQuartOutEasing = Easing { fraction ->
+    val inverse = 1f - fraction
+    1f - inverse.pow(4.5f)
+}
+
+/** [OobeQuartOutEasing] 的温和起步变体：Hermite 把起点速度压为 0，中后段保持原强减速 */
+val OobeQuartOutSoftStartEasing = Easing { fraction ->
+    val t = fraction.coerceIn(0f, 1f)
+    val k = 0.48f
+    val shaped = if (t <= k) {
+        // shaped(0)=0, shaped'(0)=0, shaped(k)=k, shaped'(k)=1
+        -t * t * t / (k * k) + 2f * t * t / k
+    } else {
+        t
+    }
+    val inverse = 1f - shaped
+    1f - inverse.pow(4.5f)
+}
+
+/** 二级页「出场」缓动：起步更缓、后段正常滑出。 */
+val SecondaryPageExitEasing = CubicBezierEasing(0.36f, 0.18f, 0.3f, 0.85f)
+
+/**
+ * 课表外观页（开洞）全套动效共用的缓动：入场/退场、缩放、盖层、弹窗让位上移全用它。
+ */
+val CustomizePageEasing = CubicBezierEasing(0.3f, 0.5f, 0.2f, 1.0f)
+
+// ──────────────────────────────────────────────────────────────────────────
+// 课表外观页「封面快照」时序
+//
+// 进入外观页时先把整屏截图当封面盖上去，再随主内容一起缩进洞里。这三个值决定
+// 「外观页开始组合 → 封面完全撤除」这根时间轴，外观页自己的元素入场动画必须
+// 整体收尾在 [CUSTOMIZE_COVER_WINDOW_MILLIS] 之内 —— 只要有一个元素晚于封面
+// 撤除才落地，观感就是「封面都没了，按钮还在飞」的脱节感。
+// ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * 封面快照开始入洞缩放前的静置。
+ *
+ * 只需盖住「一堆状态变更 → 下一帧封面以完整 1f 上屏」。原值 280ms 是纯空等：
+ * 实测（iPhone 18 Pro Max / iOS 27.0）「首个可见变化」因此被推迟到 1033ms，
+ * 截图后那段肉眼可见的「顿」就是它。
+ */
+const val CUSTOMIZE_COVER_HOLD_MILLIS = 32
+
+/** 封面快照入洞缩放时长（与主内容 `cutoutMainScale` 同长，保证两者同步）。 */
+const val CUSTOMIZE_COVER_SCALE_MILLIS = 400
+
+/** 封面快照淡出时长。 */
+const val CUSTOMIZE_COVER_FADE_MILLIS = 120
+
+/** 封面快照从「外观页开始组合」到「完全撤除」的总时长。见上方说明。 */
+const val CUSTOMIZE_COVER_WINDOW_MILLIS =
+    CUSTOMIZE_COVER_HOLD_MILLIS + CUSTOMIZE_COVER_SCALE_MILLIS + CUSTOMIZE_COVER_FADE_MILLIS
+
+val OobeFifthpowerOutEasing = Easing { fraction ->
+    val inverse = 1f - fraction
+    1f - inverse * inverse * inverse * inverse * inverse
+}
+
+val OobeHomeSpringEasing = Easing { fraction ->
+    if (fraction <= 0f) return@Easing 0f
+    if (fraction >= 1f) return@Easing 1f
+    val dampingRatio = 0.65f
+    val angularFrequency = 10.5f
+    val dampedFrequency = angularFrequency * sqrt(1f - dampingRatio * dampingRatio)
+    val envelope = exp((-dampingRatio * angularFrequency * fraction).toDouble()).toFloat()
+    1f - envelope * (
+        cos(dampedFrequency * fraction) +
+            dampingRatio / sqrt(1f - dampingRatio * dampingRatio) * sin(dampedFrequency * fraction)
+        )
+}
+
+private val OobeSineInOutEasing = CubicBezierEasing(0.37f, 0f, 0.63f, 1f)
+
+fun uiStyleSwitchTransform(): ContentTransform =
+    ((scaleIn(
+        initialScale = 1.4f,
+        animationSpec = tween(OOBE_HOME_ENTER_MILLIS, easing = OobeHomeSpringEasing),
+    ) + fadeIn(
+        animationSpec = tween(
+            durationMillis = 230,
+            delayMillis = 60,
+            easing = OobeSineInOutEasing,
+        ),
+    )).togetherWith(
+        fadeOut(
+            animationSpec = tween(OOBE_EXIT_MILLIS, easing = OobeSineInOutEasing),
+        ),
+    )).apply {
+        targetContentZIndex = 1f
+    }
+
+fun oobeToHomeTransform(): ContentTransform =
+    (scaleIn(
+        initialScale = 1.3f,
+        animationSpec = tween(OOBE_HOME_ENTER_MILLIS, easing = OobeHomeSpringEasing),
+    ) + fadeIn(
+        animationSpec = tween(durationMillis = 230, delayMillis = 60, easing = OobeSinOutEasing),
+    )).togetherWith(
+        scaleOut(
+            targetScale = 0.8f,
+            animationSpec = tween(OOBE_EXIT_MILLIS, easing = OobeHomeSpringEasing),
+        ) + fadeOut(
+            animationSpec = tween(OOBE_EXIT_MILLIS, easing = OobeSinOutEasing),
+        ),
+    )
+
+fun homeToOobeTransform(): ContentTransform =
+    (fadeIn(tween(OOBE_EXIT_MILLIS)) + scaleIn(initialScale = 0.96f))
+        .togetherWith(ExitTransition.None)
+
+fun oobeStepTransform(): ContentTransform =
+    (scaleIn(
+        initialScale = 0.96f,
+        animationSpec = tween(OOBE_PAGE_TRANSITION_MILLIS, easing = OobeCubicOutEasing),
+    ) + fadeIn(
+        animationSpec = tween(OOBE_PAGE_TRANSITION_MILLIS, easing = OobeCubicOutEasing),
+    )).togetherWith(
+        scaleOut(
+            targetScale = 0.96f,
+            animationSpec = tween(OOBE_PAGE_TRANSITION_MILLIS, easing = OobeCubicOutEasing),
+        ) + fadeOut(
+            animationSpec = tween(OOBE_PAGE_TRANSITION_MILLIS, easing = OobeCubicOutEasing),
+        ),
+    )

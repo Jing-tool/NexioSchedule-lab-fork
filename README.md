@@ -76,6 +76,9 @@
 **个性化**
 - 壁纸搭配自定义（卡片模糊、透明度、高度、圆角）
 - 深色模式适配
+- 莫奈取色：页面背景、日期高亮与课程卡片跟随系统壁纸动态配色（Android 12 及以上，可在应用偏好设置中开启，关闭后恢复课程自定义颜色）
+- 桌面主题图标：提供透明单色图标层，支持 Android 13 及以上支持主题图标的启动器，需在系统桌面设置中开启
+- 底栏切换轻震动，遵循应用触感反馈开关
 - 应用偏好设置（主题模式、首页默认页、应用风格）
 
 **UI 特色**
@@ -96,7 +99,7 @@
 ## 项目结构
 
 ```
-app/src/main/java/com/haooz/chedule/
+androidApp/src/main/java/com/haooz/chedule/
 ├── ui/
 │   ├── activities/            // 各功能页面（Activity / Compose Screen）
 │   │   ├── MainActivity.kt              // 主页面 - 应用入口

@@ -242,8 +242,8 @@ CHECKS = [
         f"{J_CORE}/data/CourseRepository.kt",
         [
             r"private val BACKUP_EXTRA_PREFS = listOf\(",
-            r'"app_preferences"', r'"app_theme_prefs"', r'"course_reminder_prefs"',
-            r'"update_settings"', r'"edu_import_prefs"',
+            r'"app_preferences"', r'"app_theme_prefs"', r'"appearance_settings"',
+            r'"course_reminder_prefs"', r'"update_settings"', r'"edu_import_prefs"',
         ],
         [r'"(countdown_state|weather_prefs|stats_prefs|webdav_config)"\s*,?\s*//'],  # 这几类不该进备份
     ),

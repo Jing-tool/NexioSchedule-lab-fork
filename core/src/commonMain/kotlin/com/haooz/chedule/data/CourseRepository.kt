@@ -2245,34 +2245,38 @@ class CourseRepository private constructor() : PeriodTimeSource {
     }
 
     /**
-     * 外观键不进全量备份。外观已整体迁到 [AppearancePrefs] 的独立 prefs 文件，
-     * 这里保留判定是为兜住历史备份里混入的旧外观键（`combination_*` / `comb_*` / `wallpaper_*`）。
+     * ★ 本 fork 与上游的**故意分歧**（每次合并都会撞这里）：
+     *   上游把「全量备份」定义成"课表数据 + 节假日/调休"，有意把搭配/外观、提醒/勿扰/小组件
+     *   这些应用功能设置挡在外面。本 fork 选择**带上全部用户设置** —— 换设备或重装后，
+     *   课前提醒 / 超级岛开关 / 勿扰 / 假期余额 / 返校准备清单 / 小部件档位 / 搭配外观
+     *   不该静默回到默认值（当初就是"恢复了但设置全变了、还不报错"才改的）。
+     *
+     * ★ 这里必须是**黑名单**，不能退回白名单：原实现只导"带 schedule_/time_config_ 前缀的键
+     *   + 8 个全局键"，于是所有**不带前缀的用户设置**都进不了备份。
+     *
+     * 刻意**不**进备份的：countdown_state（瞬时）、weather_prefs（缓存）、
+     * stats_prefs（上报计数）、notice_prefs（公告已读）、webdav_config（含凭据）。
      */
-    private fun isCombinationBackupKey(key: String): Boolean {
-        return key == AppearancePrefs.FILE_STYLE_KEY ||
-            key.startsWith("combination_") ||
-            key.startsWith("comb_") ||
-            key.startsWith("wallpaper_")
-    }
+    private val BACKUP_EXTRA_PREFS = listOf(
+        "app_preferences",       // 触感反馈 / 隐私同意 / 隐藏背景
+        "app_theme_prefs",       // 主题模式（浅色 / 深色 / 跟随系统）
+        "appearance_settings",   // 搭配外观（上游 1.6.5 起独立成文件；不进它就会丢外观）
+        "course_reminder_prefs", // 课中提醒 / 岛 B 区模式 / 展开光效
+        "update_settings",       // 更新通道 / 下载源
+        "edu_import_prefs",      // 教育导入仓库地址
+    )
 
-    /** 提醒、勿扰、小组件等应用功能设置不进全量备份 */
-    private fun isAppFeatureBackupKey(key: String): Boolean {
-        return key == KEY_PRE_CLASS_REMINDER ||
-            key == KEY_PRE_CLASS_REMINDER_MINUTES ||
-            key == KEY_NEXT_DAY_REMINDER ||
-            key == KEY_NEXT_DAY_REMINDER_HOUR ||
-            key == KEY_NEXT_DAY_REMINDER_MINUTE ||
-            key == KEY_ISLAND_NOTIFICATION ||
-            key == KEY_CLASS_DND ||
-            key == KEY_CLASS_DND_MODE ||
-            key == KEY_WIDGET_PADDING_MODE
-    }
+    /** 其它 prefs 文件在备份里用 prefs@<文件>@<键> 命名空间，键撞名也不会互相覆盖。 */
+    private val BACKUP_PREFS_TAG = "prefs@"
 
-    /** 全量备份：课表数据 + 节假日/调休；不含搭配、提醒等应用功能设置与主题等应用偏好。 */
+    /** 全量备份：课表数据 + 节假日/调休 + **全部用户设置**（与上游语义不同，见上）。 */
     fun exportAllPreferences(): Map<String, Any> {
         val result = mutableMapOf<String, Any>()
+        // 唯一要排除的是"不该跨设备复制的内部状态"：
+        // 迁移标记由恢复流程按 preserveFolderMembership 重新决定，不该跟着备份走。
+        val excludedKeys = setOf(KEY_DEFAULT_FOLDER_MIGRATED)
         for ((key, value) in prefs.all()) {
-            if (isCombinationBackupKey(key) || isAppFeatureBackupKey(key)) continue
+            if (key in excludedKeys) continue
             when (value) {
                 is String -> result[key] = value
                 is Int -> result[key] = value
@@ -2282,6 +2286,24 @@ class CourseRepository private constructor() : PeriodTimeSource {
                 is Set<*> -> {
                     @Suppress("UNCHECKED_CAST")
                     result[key] = (value as Set<String>).toList()
+                }
+            }
+        }
+        // 其它用户设置文件一并导出：这些文件以前完全不进备份 ——
+        // 换设备/重装后触感、材质等级、主题、课中提醒、岛 B 区模式、更新通道等会悄悄回到默认值。
+        for (fileName in BACKUP_EXTRA_PREFS) {
+            for ((key, value) in AppStorage.store(fileName).all()) {
+                val tagged = "$BACKUP_PREFS_TAG$fileName@$key"
+                when (value) {
+                    is String -> result[tagged] = value
+                    is Int -> result[tagged] = value
+                    is Boolean -> result[tagged] = value
+                    is Float -> result[tagged] = value
+                    is Long -> result[tagged] = value
+                    is Set<*> -> {
+                        @Suppress("UNCHECKED_CAST")
+                        result[tagged] = (value as Set<String>).toList()
+                    }
                 }
             }
         }
@@ -2338,8 +2360,11 @@ class CourseRepository private constructor() : PeriodTimeSource {
                     key == HolidayManager.BACKUP_EXCLUSION_KEY ||
                     key == HolidayManager.BACKUP_BEFORE_EXCLUSION_KEY
                 ) continue
-                // 搭配、提醒等应用功能设置不进备份，恢复时也不覆盖设备上的对应配置
-                if (isCombinationBackupKey(key) || isAppFeatureBackupKey(key)) continue
+                // prefs@<文件>@<键>：其它用户设置文件（本 fork 会把它们一并导出）
+                if (key.startsWith(BACKUP_PREFS_TAG)) {
+                    restoreExtraPreference(key, value)
+                    continue
+                }
                 when (value) {
                     is String -> putString(key, value)
                     is Boolean -> putBoolean(key, value)
@@ -2369,6 +2394,46 @@ class CourseRepository private constructor() : PeriodTimeSource {
         invalidateAllCaches()
         if (!preserveFolderMembership) migrateSchedulesIntoDefaultFolder()
         dispatchCourseChanged("restore", "")
+    }
+
+    /**
+     * 还原 prefs@<文件>@<键> 形式的键。
+     *
+     * 只写到 [BACKUP_EXTRA_PREFS] 白名单里的文件 —— 备份文件可能来自别处或被改过，
+     * 不能让它决定我们要写哪个 prefs 文件。数值按目标键**原有的类型**落库
+     * （getInt/getLong 对类型敏感，写错会 ClassCastException）。
+     */
+    private fun restoreExtraPreference(taggedKey: String, value: Any) {
+        val rest = taggedKey.removePrefix(BACKUP_PREFS_TAG)
+        val sep = rest.indexOf('@')
+        if (sep <= 0) return
+        val fileName = rest.substring(0, sep)
+        val originalKey = rest.substring(sep + 1)
+        if (fileName !in BACKUP_EXTRA_PREFS || originalKey.isEmpty()) return
+        val target = AppStorage.store(fileName)
+        val current = target.all()[originalKey]
+        target.edit {
+            when (value) {
+                is Boolean -> putBoolean(originalKey, value)
+                is String -> putString(originalKey, value)
+                is Number -> {
+                    val d = value.toDouble()
+                    when {
+                        current is Long -> putLong(originalKey, d.toLong())
+                        current is Float -> putFloat(originalKey, d.toFloat())
+                        d == d.toLong().toDouble() -> putInt(originalKey, d.toInt())
+                        else -> putFloat(originalKey, d.toFloat())
+                    }
+                }
+                is List<*> -> {
+                    if (current is Set<*>) {
+                        putStringSet(originalKey, value.filterIsInstance<String>().toSet())
+                    } else {
+                        putString(originalKey, encodeStringList(value.filterIsInstance<String>()))
+                    }
+                }
+            }
+        }
     }
 
     fun getSectionsForSchedule(scheduleId: String): Triple<Int, Int, Int> {

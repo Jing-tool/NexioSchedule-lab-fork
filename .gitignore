@@ -36,6 +36,10 @@ server/
 # --- Gradle 包装器缓存 ---
 .gradle/
 
+# --- Python 工具（tools/*.py 会生成 __pycache__，别提交） ---
+__pycache__/
+*.pyc
+
 # --- 其他 ---
 /captures
 .externalNativeBuild

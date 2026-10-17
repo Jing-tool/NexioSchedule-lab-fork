@@ -173,14 +173,15 @@ jobs:
             "platforms;android-37.0" "build-tools;37.0.0" > /dev/null
           echo "SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
 
-      - name: 准备签名材料（上游新版 build.gradle.kts 在**构建期**就要 keystore）
-        # 上游 9ea4e54d 起，app/build.gradle.kts 加了 signingConfigs.release：
-        #   storeFile 默认 ../keystore/nexio-release.jks（相对 app 模块 = 仓库根 keystore/），
-        #   并把 debug / release 两个 buildType 都挂上了它。缺文件时 :app:validateSigningRelease
-        #   会让 assembleRelease 直接失败（我们就是这么红了一次 —— 代码本身没问题）。
-        # 所以：**构建之前**就把本 fork 的 keystore 放好，并用 keystore.properties
-        #   （上游用 rootProject.file 读它，且已在 .gitignore 忽略）覆盖路径/口令，
-        #   让 AGP 直接签出正式包 —— 证书仍是本 fork 的，覆盖安装不受影响。
+      - name: 准备签名材料（构建期可能要 keystore，所以必须放在构建**之前**）
+        # 上游曾在 9ea4e54d 给 app/app/build.gradle.kts 加过 signingConfigs.release
+        #   （storeFile 缺省 ../keystore/nexio-release.jks、读 keystore.properties），
+        #   缺文件时 assembleRelease 会直接红在 validateSigningRelease；
+        #   后来又撤掉了。上游两种形态来回切过，所以这里**照旧先把材料备好**：
+        #   有 signingConfig 就用它签（证书仍是本 fork 的，覆盖安装不受影响），
+        #   没有就走「整理产物」里的 zipalign + apksigner 回退路径 —— 两条路都通。
+        # 目前上游 1.6.5 的 androidApp/build.gradle.kts **没有** signingConfigs.release，
+        #   因此实际生效的是回退路径。
         if: github.event_name == 'workflow_dispatch' || steps.merge.outputs.merged == 'true'
         env:
           KS_B64: ${{ secrets.KEYSTORE_BASE64 }}
@@ -214,9 +215,9 @@ jobs:
           # CI 在云端，用官方 Gradle 源（仓库里的 wrapper 指向的是国内镜像）
           sed -i 's#distributionUrl=.*#distributionUrl=https://services.gradle.org/distributions/gradle-9.5.1-bin.zip#' \
             gradle/wrapper/gradle-wrapper.properties
-          VNAME=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts)
+          VNAME=$(grep -oP 'versionName = "\K[^"]+' androidApp/build.gradle.kts)
           MAINVER=$(echo "$VNAME" | sed 's/-.*//')
-          VC=$(grep -oP 'versionCode = \K[0-9]+' app/build.gradle.kts)
+          VC=$(grep -oP 'versionCode = \K[0-9]+' androidApp/build.gradle.kts)
           # 序号 = **全仓库**历史 gh 发布数 + 1（不是"同 MAINVER 下的第几个"）。
           #   为什么要全局计数：分母用 MAINVER 的话，基准一升级（1.5.6 → 1.6.0.1）
           #   计数会从 5 掉回 0，FORK_CODE = VC*100+1 = 15601 < 已有的 15605，
@@ -228,15 +229,15 @@ jobs:
           # 版本号用第 4 段递增：1.5.6.1-gh1 / 1.5.6.2-gh2 …
           # 这样 App 的更新检查（比较数字段）才能认出"有新版"，同时 MAJOR.MINOR.PATCH 与上游保持对齐。
           FORK_VER="${MAINVER}.${GH_N}-gh${GH_N}"
-          sed -i "s/versionName = \"[^\"]*\"/versionName = \"${FORK_VER}\"/" app/build.gradle.kts
-          sed -i "s/versionCode = [0-9]*/versionCode = ${FORK_CODE}/" app/build.gradle.kts
+          sed -i "s/versionName = \"[^\"]*\"/versionName = \"${FORK_VER}\"/" androidApp/build.gradle.kts
+          sed -i "s/versionCode = [0-9]*/versionCode = ${FORK_CODE}/" androidApp/build.gradle.kts
           {
             echo "MAINVER=$MAINVER"; echo "VNAME=$VNAME"; echo "VC=$VC"
             echo "GH_N=$GH_N";     echo "FORK_CODE=$FORK_CODE"; echo "FORK_VER=$FORK_VER"
           } >> "$GITHUB_OUTPUT"
           echo "本次构建：${FORK_VER}（versionCode=${FORK_CODE}，上游 ${VNAME}/${VC}）"
           chmod +x gradlew
-          ./gradlew :app:assembleRelease --no-daemon
+          ./gradlew :androidApp:assembleRelease --no-daemon
 
       - name: 整理产物（AGP 已用 fork keystore 签好；上游若没有 signingConfig 则回退本地签名）
         if: github.event_name == 'workflow_dispatch' || steps.merge.outputs.merged == 'true'
@@ -246,20 +247,20 @@ jobs:
           KEY_PASS: ${{ secrets.KEY_PASSWORD }}
         run: |
           BT="$SDK_ROOT/build-tools/37.0.0"
-          mkdir -p app/build/outputs/final
+          mkdir -p androidApp/build/outputs/final
           APK_NAME="Nexio.v${{ steps.build.outputs.FORK_VER }}.apk"
-          OUT="app/build/outputs/final/$APK_NAME"
-          SRC="app/build/outputs/apk/release/app-release.apk"
+          OUT="androidApp/build/outputs/final/$APK_NAME"
+          SRC="androidApp/build/outputs/apk/release/app-release.apk"
           if [ -f "$SRC" ]; then
             echo "✅ 构建期已签名（上游 signingConfigs.release + 本 fork 的 keystore）"
           else
-            SRC="app/build/outputs/apk/release/app-release-unsigned.apk"
+            SRC="androidApp/build/outputs/apk/release/app-release-unsigned.apk"
             echo "::warning::上游没有 release signingConfig —— 回退到本地 zipalign + apksigner"
-            "$BT/zipalign" -f 4 "$SRC" app/build/outputs/final/aligned.apk
+            "$BT/zipalign" -f 4 "$SRC" androidApp/build/outputs/final/aligned.apk
             "$BT/apksigner" sign --ks signing/fork.jks --ks-key-alias "$KEY_ALIAS" \
               --ks-pass env:KS_PASS --key-pass env:KEY_PASS \
               --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true \
-              --out "$OUT" app/build/outputs/final/aligned.apk
+              --out "$OUT" androidApp/build/outputs/final/aligned.apk
             SRC="$OUT"
           fi
           # ★ 只做对齐检查，绝不 zipalign 已签名的包（签完再对齐会破坏 v2/v3 签名）
@@ -269,8 +270,8 @@ jobs:
           #   GitHub 默认 shell 是 `bash -e`，整步直接失败（2026-10-02 真踩：上游撤掉 signingConfig
           #   之后第一次走回退路径，就红在这一行）。所以只在两者不同时才复制。
           if [ "$SRC" != "$OUT" ]; then cp -f "$SRC" "$OUT"; fi
-          ( cd app/build/outputs/final && sha256sum "$APK_NAME" > "$APK_NAME.sha256" && cat "$APK_NAME.sha256" )
-          ls -lh app/build/outputs/final/
+          ( cd androidApp/build/outputs/final && sha256sum "$APK_NAME" > "$APK_NAME.sha256" && cat "$APK_NAME.sha256" )
+          ls -lh androidApp/build/outputs/final/
 
       - name: 可选｜wear 变体签名（与手表 rpk 同证书；配了 WEAR_KEYSTORE_BASE64 才出）
         # ★ 非致命：这一步失败**不影响普通包发布**（手机照常能收到更新），
@@ -296,19 +297,19 @@ jobs:
             exit 0
           fi
           BT="$SDK_ROOT/build-tools/37.0.0"
-          mkdir -p signing app/build/outputs/final
+          mkdir -p signing androidApp/build/outputs/final
           printf '%s' "$WKS_B64" | base64 -d > signing/wear.jks
           chmod 600 signing/wear.jks
-          SRC="app/build/outputs/apk/release/app-release.apk"
-          [ -f "$SRC" ] || SRC="app/build/outputs/apk/release/app-release-unsigned.apk"
-          WEAR="app/build/outputs/final/Nexio.v${{ steps.build.outputs.FORK_VER }}-wear.apk"
-          "$BT/zipalign" -f 4 "$SRC" app/build/outputs/final/wear-aligned.apk
+          SRC="androidApp/build/outputs/apk/release/app-release.apk"
+          [ -f "$SRC" ] || SRC="androidApp/build/outputs/apk/release/app-release-unsigned.apk"
+          WEAR="androidApp/build/outputs/final/Nexio.v${{ steps.build.outputs.FORK_VER }}-wear.apk"
+          "$BT/zipalign" -f 4 "$SRC" androidApp/build/outputs/final/wear-aligned.apk
           "$BT/apksigner" sign --ks signing/wear.jks --ks-key-alias "$WKEY_ALIAS" \
             --ks-pass env:WKS_PASS --key-pass env:WKEY_PASS \
             --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true \
-            --out "$WEAR" app/build/outputs/final/wear-aligned.apk
+            --out "$WEAR" androidApp/build/outputs/final/wear-aligned.apk
           "$BT/apksigner" verify --print-certs "$WEAR" | head -6
-          ( cd app/build/outputs/final && sha256sum "$(basename "$WEAR")" > "$(basename "$WEAR").sha256" && cat "$(basename "$WEAR").sha256" )
+          ( cd androidApp/build/outputs/final && sha256sum "$(basename "$WEAR")" > "$(basename "$WEAR").sha256" && cat "$(basename "$WEAR").sha256" )
           echo "✅ wear 变体已生成（与普通包同一次构建、同版本号，只换签名）"
 
       - name: 守卫｜APK 契约核验（签名指纹 / 版本号 / 单调递增）
@@ -317,7 +318,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           EXPECT_CERT: a7fdc7b704db284774a0124fb13495b5e6ee4a05f6430547ad8ec21aba5ac938
         run: |
-          APK="app/build/outputs/final/Nexio.v${{ steps.build.outputs.FORK_VER }}.apk"
+          APK="androidApp/build/outputs/final/Nexio.v${{ steps.build.outputs.FORK_VER }}.apk"
           BT="$SDK_ROOT/build-tools/37.0.0"
           # ① 签名指纹必须与"手机上现有那版"一致（否则装了也不能覆盖升级）
           CERT=$("$BT/apksigner" verify --print-certs "$APK" | grep -m1 -i 'SHA-256 digest' | sed 's/.*digest: //')
@@ -350,7 +351,7 @@ jobs:
 
           # ④ wear 变体（如果这次出了）：必须与普通包**同版本号**、但**不同证书**。
           #    同证书 = 根本没换 keystore，变体就白做了；不同版本号 = 两个包不是同一次构建。
-          WEAR_APK="app/build/outputs/final/Nexio.v${{ steps.build.outputs.FORK_VER }}-wear.apk"
+          WEAR_APK="androidApp/build/outputs/final/Nexio.v${{ steps.build.outputs.FORK_VER }}-wear.apk"
           if [ -f "$WEAR_APK" ]; then
             WCERT=$("$BT/apksigner" verify --print-certs "$WEAR_APK" | grep -m1 -i 'SHA-256 digest' | sed 's/.*digest: //')
             if [ "$WCERT" = "$CERT" ]; then
@@ -385,7 +386,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: Nexio-fork-release-${{ steps.build.outputs.FORK_VER }}
-          path: app/build/outputs/final/Nexio.v*.apk*
+          path: androidApp/build/outputs/final/Nexio.v*.apk*
 
       - name: 发布 GitHub Release
         # dry_run=true = 只验证构建与守卫，不发版、不占版本号（改定制 / 验 CI 时先用它验证）
@@ -405,7 +406,7 @@ jobs:
           fi
           CUSTOM_LOG=$(git log upstream/master..HEAD --no-merges --format='- %s' | head -40)
           CERT=$("$SDK_ROOT/build-tools/37.0.0/apksigner" verify --print-certs \
-            "app/build/outputs/final/Nexio.v${{ steps.build.outputs.FORK_VER }}.apk" 2>/dev/null \
+            "androidApp/build/outputs/final/Nexio.v${{ steps.build.outputs.FORK_VER }}.apk" 2>/dev/null \
             | grep -m1 -i 'SHA-256 digest' | sed 's/.*digest: //')
           cat > /tmp/notes.md << MDEOF
           ### 📦 构建信息
@@ -436,7 +437,7 @@ jobs:
           - **同一 fork 系列可直接覆盖安装**（versionCode 单调递增：上游码×100 + 序号）；
           - 校验：下载后比对同名 \`.sha256\`（\`sha256sum -c\` 即可）。
           MDEOF
-          gh release create "$TAG" app/build/outputs/final/Nexio.v*.apk app/build/outputs/final/*.sha256 \
+          gh release create "$TAG" androidApp/build/outputs/final/Nexio.v*.apk androidApp/build/outputs/final/*.sha256 \
             --repo "$GITHUB_REPOSITORY" --title "$TAG" --notes-file /tmp/notes.md \
             || echo "Release 已存在或创建失败（忽略）"
 
@@ -497,7 +498,7 @@ jobs:
           fi
           TAG="v${{ steps.build.outputs.FORK_VER }}"
           # 附件 = 本地产出的**全部** APK（普通 + 可能的 wear 变体）
-          APKS=$(ls app/build/outputs/final/Nexio.v*.apk 2>/dev/null || true)
+          APKS=$(ls androidApp/build/outputs/final/Nexio.v*.apk 2>/dev/null || true)
           APK_N_LOCAL=$(printf '%s\n' "$APKS" | grep -c '\.apk$' || true)
           echo "本地待上传 APK（$APK_N_LOCAL 个）："; printf '%s\n' "$APKS"
           API="https://gitee.com/api/v5/repos/$GITEE_REPO"

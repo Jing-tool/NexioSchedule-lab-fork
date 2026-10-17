@@ -47,6 +47,7 @@ F_UPDCHECK = f"{J_APP}/ui/utils/UpdateChecker.kt"
 F_UPDINST = f"{J_APP}/ui/utils/UpdateInstaller.kt"
 WF_REL = ".github/workflows/sync-upstream-build-release.yml"
 F_UPDSET = f"{J_SHARED}/ui/activities/UpdateSettingsScreen.kt"
+F_MANIFEST = "androidApp/src/main/AndroidManifest.xml"
 
 _cache = {}
 
@@ -333,6 +334,23 @@ CHECKS = [
         F_REMSCREEN,
         [r"假期课程排除：", r"loadBeforeCourseExclusion"],
         [],
+    ),
+    (
+        "单一 Activity：不得再新增 .ui.activities.* 的 Activity（上游已改成单 Activity + 路由）",
+        # 上游 1.6.5 把十几个二级页 Activity 全并进了路由。本地若再"图省事"加一个 Activity，
+        # iOS/桌面就永远到不了那个页面，Manifest 也会重新变成多宿主。
+        F_MANIFEST,
+        [r"<activity"],
+        [r'<activity\s+android:name="\.ui\.activities\.(?!MainActivity)'],
+    ),
+    (
+        "CI 不许写死 APK 产物名（KMP 重构后产物名会变，写死就 zipalign 报 No such file）",
+        # 真踩：KMP 重构后 androidApp 的 APK 不再叫 app-release[-unsigned].apk，工作流写死名字
+        # → "Unable to open ... as zip archive: No such file or directory"。
+        # 必须用 find 按目录解析（注释里提到这个名字不影响，所以只钉 SRC= 赋值）。
+        WF_REL,
+        [r"find androidApp/build/outputs/apk/release"],
+        [r"SRC=.*app-release"],
     ),
 ]
 

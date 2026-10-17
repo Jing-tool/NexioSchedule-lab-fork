@@ -40,3 +40,8 @@ ui-shared/src/commonMain/kotlin/com/haooz/chedule/ui/components/DayColumn.kt
 ui-shared/src/commonMain/kotlin/com/haooz/chedule/ui/screens/TodayScreen.kt
 ui-shared/src/commonMain/kotlin/com/haooz/chedule/ui/utils/GlassPerf.kt
 ui-shared/src/commonMain/kotlin/com/haooz/chedule/ui/utils/MinuteTick.kt
+
+# ★ 2026-10-17 补：上游 1.6.5 起主界面壳在这里，本 fork 往里面加了
+#   「滑动/翻页期毛玻璃系数驱动（snapshotFlow）」与「拖拽落点用 sectionTopDp」——
+#   上游一改这个文件，这两处就可能被静默冲掉（能编译 ≠ 语义还在）。
+ui-shared/src/commonMain/kotlin/com/haooz/chedule/ui/activities/CourseScheduleApp.kt

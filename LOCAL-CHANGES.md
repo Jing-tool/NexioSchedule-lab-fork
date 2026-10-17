@@ -57,29 +57,41 @@
 
 ## 三、按主题索引（冲突时按这里定位）
 
-上游如果改了同一个文件，先看这张表知道**本地为什么动它**，再决定怎么合。
+> **2026-10-17 重写**：上游已把单模块 `app/` 拆成 KMP 多模块，下表按**新布局**给。
+> 路径速记：`androidApp/`（Android 宿主：reminder / widget / 平台实现）、
+> `ui-shared/src/commonMain/`（共享 Compose UI，**不许 android./java.**）、
+> `core/src/commonMain/`（数据层）、`core/src/androidMain/`（数据层的 Android 实现）。
 
-| 主题 | 涉及提交 | 关键文件 |
+| 主题 | 落在哪 | 关键点 |
 |---|---|---|
-| 底栏避让系统导航栏 / 横屏导航判定 | 1 | `ScheduleBottomBar.kt` `MainActivity.kt` `MainScheduleScreen.kt` |
-| 返校节次豁免（新功能：假期最后一天放出指定节次） | 1 | `data/ReturnDayReminder.kt`(新) `CourseReminderHelper.kt` `CourseRepository.kt` `DayColumn.kt` `MainScheduleScreen.kt` |
-| 假期余额 / 返校清单（通知+精确闹钟） | 1, 8, 9 | `CourseReminderHelper.kt` `CourseRepository.kt` `HolidaySettingsScreen.kt` |
-| 超级岛 / 实时动态 同步与规范修正 | 1, 4, 5 | `IslandNotificationHelper.kt` `CourseReminderHelper.kt` |
-| **XMSF 绕白名单改成批量窗口**（取消也走窗口、按提交顺序串行、自愈不掀窗） | 5 | `IslandNotificationHelper.kt` `ShizukuManager.kt` |
-| 性能（假期 JSON 缓存 / 刷新链唤醒门控 / Compose 重组热点） | 3 | `HolidayManager.kt` `CourseReminderHelper.kt` `MainActivity.kt` `TodayScreen.kt` `WidgetUpdateCache.kt` 等 |
-| **节次几何单一真源**（拖拽落点 / 吸附位置 / 卡片高度都要用 `sectionTop`） | 6, 7 | `MainActivity.kt`（`computeDropTarget` / `sectionTopPx`）`MainScheduleScreen.kt`（`ScheduleGridGeometry`） |
-| `drawBackdrop` lambda 记忆化（避免每帧重建毛玻璃） | 3 | `TodayScreen.kt` `ShortcutMenu.kt` `CustomizeScheduleScreen.kt` |
-| 提醒设置页「提醒体检」自检 | 9 | `CourseReminderScreen.kt` |
-| **滑动/翻页期毛玻璃降级**（卡片 blur+lens / 边光；**全局系数**只在绘制期读；v29 起 150/250ms 淡入淡出而非硬切；v30 起**折射宽度恒定、只淡强度**） | 11, 13, 15 | `ui/utils/GlassPerf.kt`(新) `MainActivity.kt`(driver) `CourseCard.kt` `DayColumn.kt` `TodayScreen.kt` `EdgeLightModifier.kt` |
-| **轮询节拍**（助手/格言/课程行倒计时：分钟节拍；课程行按剩余秒数推跳变点） | 11 | `ui/utils/MinuteTick.kt`(新) `TodayAssistant.kt` `TodayScreen.kt` |
-| 预合成页数 / 页作用域内的 state 读取 / 壳 pager key lambda / 跨页 LazyListState | 11 | `MainScheduleScreen.kt` `MainActivity.kt` `TodayScreen.kt` |
-| 旧版残留闹钟 RC 的一次性清理标记 | 11 | `CourseReminderHelper.kt` |
-| **「返校」日子词**（今天/今晚/明天必须与正文所依据的日期一致；原生实时动态与超级岛共用一份） | 17 | `CourseReminderHelper.kt` `IslandNotificationHelper.kt` `AlarmReceiver.kt` |
-| **超级岛缩略态 B 区**（课前/课中同一块区域，两个下拉必须联动；未设置时跟随课前） | 19 | `IslandNotificationHelper.kt`(effectiveInClassRightMode) `CourseReminderScreen.kt` |
-| **通知 / 超级岛 / 实时动态 测试页**（9 个场景，独立页面；只调主路径发送函数） | 19, 21 | `reminder/ReminderTestScenario.kt`(新) `ui/screens/ReminderTestScreen.kt`(新) `ui/activities/ReminderTestActivity.kt`(新) `SettingsScreen.kt` `CourseReminderHelper.kt` |
-| 提醒体检卡（默认粗略状态、点击展开；位置在总开关下方） | 21 | `CourseReminderScreen.kt` |
+| 提醒口径 / 精确闹钟 / 跨零点 | `androidApp/…/reminder/CourseReminderHelper.kt` | `endMillisFor()`、通道启动即建、余额最后一天 |
+| 次日提醒文案（唯一实现） | 同上 + `…/reminder/AlarmReceiver.kt` | `nextDayReminderText` 恰好 2 个重载 |
+| 超级岛 / 实时动态 | `androidApp/…/reminder/IslandNotificationHelper.kt` | XMSF 绕白名单必须是**批量窗口** |
+| 岛 B 区判定（唯一真源） | `core/src/commonMain/…/data/ReminderController.kt` | 课前 0/1/2 → 课中 0/1 要**翻译**；哨兵 -1 |
+| 假期余额 / 返校清单（数据） | `core/…/data/CourseRepository.kt`（getter/setter）+ `core/src/androidMain/…/data/ReturnDayReminder.kt` | 这些键不带前缀，只有备份黑名单带得走 |
+| 假期余额 / 清单（设置 UI） | `ui-shared/…/ui/activities/HolidaySettingsScreen.kt` | 独立成卡，不挂在豁免卡的 `if(enabled)` 里 |
+| 提醒体检 / 测试页 | `ui-shared/…/ui/activities/CourseReminderScreen.kt`、`…/ui/screens/ReminderTestScreen.kt`、`androidApp/…/reminder/ReminderTestScenario.kt` | 测试页走**路由**，绝不新增 Activity；场景表零持久化 |
+| 毛玻璃系数降级 | `ui-shared/…/ui/utils/GlassPerf.kt` + 4 个绘制点（CourseCard / DayColumn / TodayScreen / `backdrop/…/edgelight/EdgeLightModifier.kt`） | 折射宽度恒定、只淡强度、**只在绘制期读** |
+| 分钟节拍 | `ui-shared/…/ui/utils/MinuteTick.kt` + TodayScreen / TodayAssistantCard | 用 kotlinx.datetime，不要 java.time |
+| 节次几何单一真源 | `ui-shared/…/ui/screens/MainScheduleScreen.kt`（ScheduleGridGeometry）+ `…/ui/activities/CourseScheduleApp.kt`（computeDropTarget） | `sectionTopDp` **和** `specialBandRangesDp` 都要 |
+| 备份语义（故意分歧） | `core/…/data/CourseRepository.kt` | 黑名单导出 + `prefs@文件@键` + `appearance_settings` |
+| 更新链路（fork 源 + wear 变体） | `androidApp/…/ui/utils/UpdateChecker.kt` / `UpdateInstaller.kt` + `ui-shared/…/ui/components/UpdateDialog.kt`、`activities/UpdateSettingsScreen.kt` | 只认带包版本 / 切源重查 / 安装前签名预检 |
+| 单 Activity + 路由 | `androidApp/…/ui/navigation/AppRouteContent.kt` + `ui-shared/…/ui/navigation/*` | 新页面加路由，不动 Manifest |
+| CI / 门禁 / 版本号 | `.github/workflows/sync-upstream-build-release.yml` + `tools/` | 门禁 43 条 +「配置自检」 |
 
----
+**fork 独有的新文件**（不会与上游正文冲突，但模块搬家时 git 可能把它们放错位置）：
+
+- `core/src/androidMain/kotlin/com/haooz/chedule/data/ReturnDayReminder.kt`
+- `ui-shared/src/commonMain/kotlin/com/haooz/chedule/ui/utils/GlassPerf.kt`
+- `ui-shared/src/commonMain/kotlin/com/haooz/chedule/ui/utils/MinuteTick.kt`
+- `ui-shared/src/commonMain/kotlin/com/haooz/chedule/ui/screens/ReminderTestScreen.kt`
+- `androidApp/src/main/java/com/haooz/chedule/reminder/ReminderTestScenario.kt`
+
+**合并时的三条判断口径**：
+
+1. 两边都改 → 先查 §七「故意取舍」，再决定；能"新增分支 / 新增函数"就不要改上游那几行。
+2. 上游用默认值重构 helper 时（如 `buildGridGeometry()`），**fork 加的字段必须显式补上** —— 有默认值就照样编译，语义静默丢失。
+3. 合并后必须 `python3 tools/ci_check.py .`：43 条全绿 + `[00] 配置自检` 通过才算完；路径报"文件不存在"先怀疑脚本过期。
 
 ## 四、上游发新版了，怎么合
 

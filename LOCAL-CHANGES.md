@@ -563,3 +563,33 @@ noexec 跑不起来），所以**编译只有 CI 能验**：推预演分支 → 
 注意门禁在 dispatch 时也会跑，所以预演分支要么先把清单修到全绿，要么临时放宽门禁步骤。
 **发版期间别连发两次 dispatch**（`concurrency.cancel-in-progress` 会取消在跑的那轮）。
 
+
+---
+
+## 十八、第二阶段完成（2026-10-17）· 合并式 CI 全链路验证通过
+
+**结果**：上游 **v1.6.5（4754e6c0）** 已合入 master；本地定制按 KMP 新架构**全部重做**；
+CI 门禁 41/41、KMP 平台纯净度 360 文件零违规、凭据扫描干净；GitHub Release 已发
+**`v1.6.5.19-gh19`**（Nexio.v1.6.5.19-gh19.apk + .sha256；wear 变体因未配 WEAR_* secrets 未出）。
+
+**分支状态**：master = `e231280e`（合并 `0fe5ab9f` + 上游 `4754e6c0`，9 个提交）；
+回滚点 `pre-merge-upstream-1.6.5` = `0fe5ab9f`（仍是旧的多 Activity 定制栈）。
+
+**本轮真正的工作量在"重做"而不是"解冲突"**：上游把 `app/` 拆成 KMP
+（`androidApp` / `core` / `ui-shared` / `miuix` / `backdrop`）并改成单 Activity 导航，
+所以本地 41 个定制文件按模块重新落位：提醒层留 `androidApp`（`android.*` 合法）、
+共享 UI 进 `ui-shared/commonMain`（不许 `android.*`，走 `AppStorage` / `ReminderController` 注入）、
+数据层进 `core/commonMain`（`java.time` → `kotlinx.datetime`）。
+
+**本轮踩到并记下的三条**：
+1. **跨模块的"唯一真源"要先看依赖方向**：岛 B 区判定原本在 `androidApp`，而设置页在 `ui-shared`
+   —— 依赖是单向的，设置页**不可能**引用它，所以过去只能各写一套（正是"课前跳秒/上课变静态"的根因）。
+   判定挪进 `:core` 的 `ReminderController` 才成立；门禁也跟着从 androidApp 改指 core。
+2. **两个值空间不同要翻译，不能透传**：课前 B 区 `0/1/2`（课程名/地点/倒计时）、课中只有 `0/1`
+   （正在上课/距下课）。"没设过跟随课前"必须写成 `if (课前==2) 1 else 0`，哨兵是 **-1** 不是 0。
+3. **"已收口的符号"是合并后编译失败的高频来源**：本地代码搬进新模块后仍用裸
+   `android.util.Log` / `Toast`，而新架构该位置走 `NexioLog` / `showToast`。CI 首次 `dry_run`
+   只报 7 个错误，全是这一类 —— 本地编不了时，**早跑 CI 最省事**（比人肉核对快得多）。
+
+另外：产物路径别再写死 `app-release[-unsigned].apk` —— KMP 重构后 `androidApp` 的产物名变了，
+工作流已改成按目录 `find` 解析（写死就报 `Unable to open … No such file`）。

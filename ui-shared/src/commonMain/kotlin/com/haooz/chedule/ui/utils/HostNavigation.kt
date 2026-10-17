@@ -25,6 +25,7 @@ class HostNavigationState {
     var tabCount by mutableIntStateOf(3)
     var shiftMode by mutableStateOf(false)
     var showsNativeTabBar by mutableStateOf(true)
+    var usesVerticalTabTransitions by mutableStateOf(false)
     var isDark by mutableStateOf(false)
     var bottomBarInset by mutableStateOf(0.0)
     var leftSafeAreaInset by mutableStateOf(0.0)
@@ -54,15 +55,27 @@ class HostNavigationState {
      */
     var detailBackgroundBlur by mutableFloatStateOf(0f)
         private set
-    var onDetailChromeBlur: ((Double) -> Unit)? = null
+    /** 下层背景模糊强度（0…1，不是 dp）：iOS 没有可设的半径，宿主只能按强度插值。 */
+    var onDetailBackdropBlurProgress: ((Double) -> Unit)? = null
+
+    companion object {
+        /** 详情 morph 的目标模糊半径（dp）；也是换算成 0…1 强度的基准，两处必须同源。 */
+        const val DETAIL_BACKDROP_BLUR_DP = 16f
+    }
 
     fun updateDetailBackgroundBlur(blurDp: Float) {
         if (detailBackgroundBlur == blurDp) return
         detailBackgroundBlur = blurDp
-        onDetailChromeBlur?.invoke(blurDp.toDouble())
+        onDetailBackdropBlurProgress?.invoke(
+            (blurDp / DETAIL_BACKDROP_BLUR_DP).coerceIn(0f, 1f).toDouble()
+        )
     }
     /** Whether the main screen top bar header controls are owned by native host chrome. */
     var showsNativeHeader by mutableStateOf(false)
+    /**
+     * 主界面是否跑在**平板（rail）布局**下。宽度 ≥ 600dp 即为 true
+     */
+    var isTabletLayout by mutableStateOf(false)
     /**
      * 课表外观页（开洞）期间，原生顶栏右侧是否继续保留。
      *

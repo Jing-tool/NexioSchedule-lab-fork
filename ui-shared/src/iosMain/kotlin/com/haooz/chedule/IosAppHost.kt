@@ -25,7 +25,10 @@ import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.ComposeUIViewController
+import com.haooz.chedule.data.NexioLog
 import com.haooz.chedule.ui.utils.LocalNativeDocumentChrome
+import com.haooz.chedule.ui.activities.EduImportUpdater
+import com.haooz.chedule.ui.utils.NativeDocumentAction
 import com.haooz.chedule.ui.utils.NativeDocumentChrome
 import com.haooz.chedule.ui.navigation.AppRoute
 import com.haooz.chedule.ui.navigation.AppRouter
@@ -58,8 +61,6 @@ class IosAppHost {
     private val popupHost = MiuixOverlayHostState()
     private val nativePages = mutableStateListOf<NativeDocumentPage>()
     private var nextNativePageId = 0L
-    // Mirror AppNavHost's route/occurrence saveable keys without retaining popped controllers.
-    private val savedDocumentStates = mutableMapOf<String, Map<String, List<Any?>>>()
     private var requestedPopDepth by mutableStateOf<Int?>(null)
     private var nativeTransitionInFlight by mutableStateOf(false)
     private var deferredEditorPopRouteId: String? = null
@@ -112,15 +113,20 @@ class IosAppHost {
         if (!route.isNativeDocument() || nativeContentOverlayActive ||
             nativeTransitionInFlight || requestedPopDepth != null
         ) return
+        // 与 AppRouter.navigate 同一规则：挡「已在栈顶」，连点只压一层；A → B → A 仍合法
+        if (nativePages.lastOrNull()?.route == route) return
         val usedKeys = nativePages.map { it.stateKey }.toSet()
         var stateKey = route.id
         var occurrence = 2
         while (stateKey in usedKeys) stateKey = "${route.id}#${occurrence++}"
+        if (route == AppRoute.EducationalImport) {
+            // Resolve the initial busy state before UIKit starts the push transition.
+            EduImportUpdater.startUpdateIfNeeded()
+        }
         nativePages.add(NativeDocumentPage(
             id = "native-document-${++nextNativePageId}",
             route = route,
             stateKey = stateKey,
-            restoredValues = savedDocumentStates[stateKey],
         ))
     }
 
@@ -139,13 +145,15 @@ class IosAppHost {
         nativeTransitionInFlight = inFlight
     }
 
-    /** UIKit calls this only after a successful pop; an interactive cancellation changes nothing. */
+    /** UIKit reports the depth it actually displays after every settled transition (cancelled gestures included). */
     fun completeNativePop(depth: Int) {
-        if (depth !in 0..nativePages.size) return
-        while (nativePages.size > depth) {
+        // 出栈 = 销毁：**不缓存**它的 saveable 状态（同 AppNavHost 的 stateHolder.removeState），
+        // 否则重进这一页永远是上次的滚动位置；只放掉组合控制器。
+        // ⚠ 越界不 return：UIKit 报来的深度与这里对不上时也要收敛到「屏幕上还剩几层」，
+        // 否则旧 page 会永久留在栈里，重进时它的 controller 被原样复用 = 状态还在。
+        val target = depth.coerceIn(0, nativePages.size)
+        while (nativePages.size > target) {
             val page = nativePages.removeAt(nativePages.lastIndex)
-            savedDocumentStates[page.stateKey] = page.registry.performSave()
-            // Do not cache live compositions: page disposal retains its original exit semantics.
             page.controller = null
         }
         requestedPopDepth = null
@@ -276,6 +284,9 @@ class IosAppHost {
 
     fun makeNativePageController(routeId: String): UIViewController {
         val page = nativePage(routeId)
+        // 命中复用 = 这次 push 拿回的是上一次的组合控制器。同一页还没出栈时是正常的；
+        // 页面关掉后再进还走到这里，说明出栈那一步漏清了这个 page（栈里/UIKit 里对不齐）。
+        page.controller?.let { NexioLog.d("IosNativePage", "reuse ${page.route.id} -> $routeId") }
         return page.controller ?: ComposeUIViewController {
             HostEnvironment {
                 CompositionLocalProvider(
@@ -345,6 +356,8 @@ class IosAppHost {
     val shiftMode: Boolean get() = navigation.shiftMode
     val showsNativeTabBar: Boolean get() = navigation.showsNativeTabBar
     val showsNativeHeader: Boolean get() = navigation.showsNativeHeader
+    /** 主界面是否跑在平板（rail）布局：宿主据此收起栈底那根恒空的原生导航栏 */
+    val isTabletLayout: Boolean get() = navigation.isTabletLayout
     val keepsNativeHeaderDuringCutout: Boolean get() = navigation.keepsNativeHeaderDuringCutout
     val isDark: Boolean get() = navigation.isDark
     val overlayActive: Boolean
@@ -361,12 +374,12 @@ class IosAppHost {
      * it a frame or two behind.
      */
     var onCutoutChromeOffset: ((Double) -> Unit)? = null
-    /** 连贯动画期间下层的模糊半径（dp）；宿主据此在「详情页之下、其余一切之上」压一层背景模糊 */
-    var onDetailChromeBlur: ((Double) -> Unit)? = null
+    /** 下层背景模糊强度（0…1，换算在 commonMain 完成）；宿主据此在「详情页之下、其余一切之上」压一层 */
+    var onDetailBackdropBlurProgress: ((Double) -> Unit)? = null
 
     init {
         navigation.onCutoutChromeOffsetY = { offsetY -> onCutoutChromeOffset?.invoke(offsetY) }
-        navigation.onDetailChromeBlur = { blurDp -> onDetailChromeBlur?.invoke(blurDp) }
+        navigation.onDetailBackdropBlurProgress = { onDetailBackdropBlurProgress?.invoke(it) }
     }
 
     val mainController: UIViewController by lazy {
@@ -422,6 +435,7 @@ class IosAppHost {
                             nativePages.map { it.chrome.snapshot() },
                             nativeTransitionInFlight,
                             showsNativeHeader,
+                            isTabletLayout,
                             keepsNativeHeaderDuringCutout,
                             scheduleLibraryActive,
                             scheduleLibraryTransitionActive,
@@ -458,6 +472,10 @@ class IosAppHost {
             "customize" -> navigation.onEnterCustomize?.invoke()
             "jumpToDate" -> navigation.onJumpToDate?.invoke()
         }
+    }
+
+    fun updateTabTransitionDirection(vertical: Boolean) {
+        navigation.usesVerticalTabTransitions = vertical
     }
 
     fun updateHorizontalSafeArea(left: Double, right: Double) {
@@ -541,6 +559,7 @@ private data class NativeHostSnapshot(
     val nativeChrome: List<NativeDocumentChromeSnapshot>,
     val nativeTransitionInFlight: Boolean,
     val showsNativeHeader: Boolean,
+    val isTabletLayout: Boolean,
     val keepsNativeHeaderDuringCutout: Boolean,
     val scheduleLibraryActive: Boolean,
     val scheduleLibraryTransitionActive: Boolean,
@@ -600,11 +619,32 @@ internal class NativeDocumentPage(
     val id: String,
     val route: AppRoute,
     val stateKey: String,
-    restoredValues: Map<String, List<Any?>>?,
 ) {
-    val chrome = NativeDocumentChrome()
-    // Values remain in memory, just like AppNavHost's SaveableStateHolder on iOS.
-    val registry = SaveableStateRegistry(restoredValues = restoredValues, canBeSaved = { true })
+    val chrome = NativeDocumentChrome().apply {
+        if (route == AppRoute.EducationalImport) {
+            // Install the trailing item before push; Compose keeps it up to date afterward.
+            title = "选择学校"
+            val updating = EduImportUpdater.isUpdating.value
+            action = NativeDocumentAction(
+                symbol = "arrow.clockwise",
+                label = "更新",
+                enabled = !updating,
+                busy = updating,
+                onClick = { EduImportUpdater.forceUpdate() },
+            )
+        } else if (route == AppRoute.HolidaySettings) {
+            // Include the item in UIKit's push transition before Compose publishes its handler.
+            title = "节假日与调休"
+            action = NativeDocumentAction(
+                symbol = "arrow.clockwise",
+                label = "更新",
+                enabled = false,
+                onClick = {},
+            )
+        }
+    }
+    // 随页存活：栈里这层不销毁，值就一直留着（出栈即整页丢弃，不做跨次恢复）
+    val registry = SaveableStateRegistry(restoredValues = null, canBeSaved = { true })
     var controller: UIViewController? = null
 }
 

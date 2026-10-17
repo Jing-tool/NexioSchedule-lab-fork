@@ -512,3 +512,54 @@ master 一个字节没动，问题在预演分支上就被抓住。
    对最近 3 个 GitHub Release 逐个检查 Gitee 侧：缺 release 就补建、缺安装包就从 GitHub Release
    拉同名 APK 挂上去并核验。用桩把三条控制流都跑过（齐全→跳过 / 缺 release→补建+挂包 / 有壳无包→只挂包），
    并用 `bash -e` 复现 GitHub 的默认 shell（这个事故的根因就是 `-e` 下未保护的 curl）。
+---
+
+## 十七、升基准到上游 v1.6.5（4754e6c0）—— 上游重构成 KMP，本地定制要**重做**而不是"解冲突"
+
+**这一轮的性质变了**：上游把单模块 `app/` 拆成了 KMP 多模块，并且从"多 Activity"改成
+"单 Activity + Compose 导航"。所以本地那 41 个定制文件不是"改到同一处需要手工选边"，
+而是**所在模块变了**：
+
+| 上游落位 | 放什么 | 我们的东西怎么办 |
+|---|---|---|
+| `androidApp/` | Android 宿主：reminder / widget / 平台实现 | 我们改得最深的提醒层（CourseReminderHelper / IslandNotificationHelper / AlarmReceiver）在这里，**android.* 合法**，可原样保留 |
+| `ui-shared/commonMain/` | 共享 Compose UI（screens / components / activities） | 这里**不能出现 android.***：我们过去在 MainActivity/Screen 里直接读 Context、起 Intent 的写法全都要改成上游的抽象 |
+| `core/commonMain/` | 跨平台数据层 | Context + SharedPreferences → `AppStorage.store(name)`（`KeyValueStore`）；`java.time` → `kotlinx.datetime` |
+
+新抽象（重做时照这些走，别再引 Context）：
+- 存储：`AppStorage.store("<文件名>")` → `KeyValueStore`（`all()` / `edit { putX }` / `registerListener`）；
+- 导航：`LocalHostNavigation`；路由见 `ui/navigation/AppRoute.kt`（**不要再新增 Activity**）；
+- 平台能力：`PlatformToast` / `PlatformLog` / `PlatformInfo`（core 的 expect/actual）。
+
+### 第一阶段（已完成，提交 `739695ac`）
+把 master 拉回**结构干净、可构建**的上游基线：冲突一律先取上游（含 AndroidManifest 里
+已不存在的那些 Activity）、`app/` 与 `mtzwidget/` 跟随上游删除（前者是重构产物、后者上游已弃，
+都还在 git 历史里）、本地独有的 6 个新文件先摘除待重做。
+保留的本地基建：`.github/workflows/`、`tools/`（门禁/守卫）、`patches/`（留档）、`LOCAL-CHANGES.md`。
+
+回滚点：`pre-merge-upstream-1.6.5`（= `0fe5ab9f`，与远端 `Jing494/NexioSchedule` master 同一个提交）。
+
+### 第二阶段（进行中）：按新架构逐项重做
+**`tools/ci_check.py` 就是这份清单** —— 它现在按新模块路径解析，缺哪项就报哪项。
+第一阶段结束时它报 **30 条**；重做一项就少一条。已完成的：
+
+- ✅ **备份覆盖全部用户设置**（`core/CourseRepository.kt`）：导出改黑名单 + `prefs@文件@键` 命名空间，
+  白名单新增 `appearance_settings`（上游把搭配外观拆到了这个新文件，不带上就丢外观）。
+  门禁 26/27/29 通过。
+
+待重做（按价值排序，共 27 条门禁）：
+1. 提醒层：跨零点 `endMillisFor`、通知通道启动即建、体检区分「未创建/被停用」、总开关可逆联动、
+   假期余额最后一天、返校日子词、次日文案单份实现（`androidApp/reminder`）
+2. 超级岛：B 区课前/课中联动单一真源、XMSF 绕白名单批量窗口（`androidApp/reminder`）
+3. 测试页与体检：场景表 + 独立页（**做成路由，不要新增 Activity**）+ 体检卡 + 「假期首末课程排除」说明项
+4. 流畅度：毛玻璃全局系数降级（4 个绘制点）、分钟节拍（`MinuteTick` 要用 kotlinx.datetime）
+5. 更新链路：下载源只认带包版本、切源失效重查、缓存无地址强制重查（`ui-shared` 的
+   UpdateDialog / UpdateSettingsScreen + `androidApp` 的 UpdateChecker/UpdateInstaller）
+6. 节次几何单一真源 `sectionTopDp`（拖拽落点）
+
+### 验证方式（本地编不了）
+本机 Termux 的 JDK/gradle 已被清掉（`$HOME/lib/jvm` 不存在，`_cache/jdkstage` 在 /storage 上
+noexec 跑不起来），所以**编译只有 CI 能验**：推预演分支 → `workflow_dispatch(ref=<分支>, dry_run=true)`。
+注意门禁在 dispatch 时也会跑，所以预演分支要么先把清单修到全绿，要么临时放宽门禁步骤。
+**发版期间别连发两次 dispatch**（`concurrency.cancel-in-progress` 会取消在跑的那轮）。
+

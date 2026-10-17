@@ -37,6 +37,8 @@ import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.graphicsLayer
@@ -206,6 +208,7 @@ fun AboutRoute(
     appIcon: ImageBitmap? = null,
     onExitApp: () -> Unit = {},
     diagnosticRecorder: DiagnosticRecorder = NoopDiagnosticRecorder,
+    appIconShape: Shape = RectangleShape,
 ) {
     AboutScreen(
         onBack = { router.popBack() },
@@ -214,6 +217,7 @@ fun AboutRoute(
         appVersion = appVersion,
         appName = appName,
         appIcon = appIcon,
+        appIconShape = appIconShape,
         onExitApp = onExitApp,
         diagnosticRecorder = diagnosticRecorder,
     )

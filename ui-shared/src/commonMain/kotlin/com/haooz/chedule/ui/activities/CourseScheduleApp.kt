@@ -55,6 +55,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableFloatState
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
@@ -169,6 +170,7 @@ import com.haooz.chedule.ui.screens.TabletCourseManagePane
 import com.haooz.chedule.ui.screens.TabletSwitchSchedulePane
 import com.haooz.chedule.ui.screens.TodayAssistantCardData
 import com.haooz.chedule.ui.screens.TodayScreen
+import com.haooz.chedule.ui.utils.GlassPerf
 import com.haooz.chedule.ui.utils.TransitionLayerImage
 import com.haooz.chedule.ui.utils.TransitionLayerSnapshot
 import com.haooz.chedule.ui.utils.FeatureLog
@@ -209,6 +211,8 @@ import com.kyant.backdrop.effects.vibrancy
 import com.kyant.backdrop.isRenderEffectSupported
 import com.kyant.capsule.ContinuousRoundedRectangle
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.datetime.Clock
@@ -2228,16 +2232,32 @@ fun CourseScheduleApp(
         if (relY < 0f) return null
         val sectionH = geom.sectionHeightPx
 
-        // 优先用网格权威节次顶（sectionTopDp 含分界缝与特殊块挤占），与卡片排版、落点高亮保持一致；
-        // 下面那套手写遍历漏掉特殊块，会让「实际落到的格子」与「高亮显示的格子」错开。
+        /*
+         * 优先用**渲染实际用的 sectionTop** 反查落点（单一真源）。
+         *
+         * computeSpecialGridLayout 会让特殊块（自习 / 自定义时间块）在它的时间起点占位，
+         * 把下方节次整体下移：sectionTop[g] = origSectionTop[g] + 该节以上所有特殊块高度。
+         * 下面那段"均匀高度 + 两个 24dp 分界带"的推算是**没有这层偏移**的 ——
+         * 于是只要课表里有特殊块，第 7 节往下的落点就会整体偏下约一格：拖到空格子，
+         * 阴影却落在下面那格，松手就变成"是否与下面这节课合并"。
+         *
+         * 空白格点击的反查本来就用 sectionTop（见 DayColumn 的 detectTapGestures），
+         * 这里是同一份几何的第二套口径 —— 对齐之后「实际落到的格子」与「高亮显示的格子」才一致。
+         */
         val totalSections = geom.morningSections + geom.afternoonSections + geom.eveningSections
         if (geom.sectionTopDp.isNotEmpty() && totalSections > 0) {
-            for (s in 1..totalSections) {
-                val top = geom.sectionTopDp[s]?.let { with(density) { it.dp.toPx() } } ?: continue
-                if (relY < top + sectionH) return day to s
+            // 压在特殊块上不是有效落点（块本身不是节次）
+            for ((bandTopDp, bandHeightDp) in geom.specialBandRangesDp) {
+                val bandTop = with(density) { bandTopDp.dp.toPx() }
+                val bandHeight = with(density) { bandHeightDp.dp.toPx() }
+                if (bandHeight > 0f && relY >= bandTop && relY < bandTop + bandHeight) return null
             }
-            // 落在最后一节之下：吸到最后一节
-            return day to totalSections
+            for (section in 1..totalSections) {
+                val topPx = geom.sectionTopDp[section]?.let { with(density) { it.dp.toPx() } } ?: continue
+                if (relY >= topPx && relY < topPx + sectionH) return day to section
+            }
+            // 分界缝 / 表底：没有对应的节次，不是有效落点
+            return null
         }
 
         val dividerH = with(density) { 24.dp.toPx() }
@@ -2535,6 +2555,40 @@ fun CourseScheduleApp(
         val isEntryAnimating = showSwitchSchedule && switchAnimForward && switchAnimRunning
         // The source remains rendered underneath the morph, including across controller frames.
         val mainContentAlpha = 1f
+
+        /*
+         * 毛玻璃降级：滑动/翻页进行中按**系数**淡出，停下淡入。
+         *
+         * 不能做成布尔硬切：那样滑动一开始整屏玻璃同一帧变平、停下整片弹回，
+         * 实测反馈"感觉有点突兀"。现在 150ms 淡出 / 停滑 250ms 防抖后 250ms 淡入。
+         *
+         * 这里用 snapshotFlow 而不是在 composition 里读这些 isScrollInProgress ——
+         * 那会让整个五千多行的壳 body 在每次滑动开始/结束时完整重跑一遍。
+         * 真正"读"这个系数的地方是各卡片 effects lambda / DrawModifierNode.draw 的**绘制期**，
+         * 所以过渡的每一帧只失效绘制层，一次重组都不会产生。
+         */
+        LaunchedEffect(
+            scheduleScrollState, pagerState, todayPagerState, mainPagerState, todayListScrollInProgress
+        ) {
+            snapshotFlow {
+                scheduleScrollState.isScrollInProgress ||
+                    pagerState.isScrollInProgress ||
+                    todayPagerState.isScrollInProgress ||
+                    mainPagerState.isScrollInProgress ||
+                    todayListScrollInProgress.value
+            }
+                .distinctUntilChanged()
+                .collectLatest { scrolling ->
+                    if (scrolling) {
+                        // 淡出比淡入快：起滑时尽快省下渲染开销，观感上"变糊"要跟手
+                        GlassPerf.anim.animateTo(0f, tween(durationMillis = 150))
+                    } else {
+                        // 250ms 防抖：惯性滑行尾部会连续开关几次，没有滞后会看到玻璃闪烁
+                        delay(250)
+                        GlassPerf.anim.animateTo(1f, tween(durationMillis = 250))
+                    }
+                }
+        }
 
         // liquidGlass 录制跳帧指纹：结构量变了才 update→markNeedsRecord。
         // 必须 remember 出稳定 List，否则 equals 失败会强制录制。

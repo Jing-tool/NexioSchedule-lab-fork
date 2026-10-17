@@ -1,5 +1,7 @@
 package com.haooz.chedule.ui.screens
 
+import com.haooz.chedule.ui.navigation.AppRoute
+import com.haooz.chedule.ui.navigation.LocalAppRouter
 import com.haooz.chedule.ui.utils.LocalHostNavigation
 import com.haooz.chedule.ui.utils.TransitionLayerSnapshot
 
@@ -17,6 +19,7 @@ import kotlinx.datetime.isoDayNumber
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -86,9 +89,11 @@ import top.yukonga.miuix.kmp.layout.CollapsibleTopAppBarDefaults
 import top.yukonga.miuix.kmp.layout.SharedScrollBehavior
 import top.yukonga.miuix.kmp.layout.collapsibleTopInset
 import com.kyant.backdrop.edgelight.edgeLight
+import com.haooz.chedule.ui.utils.glassPerfFactor
 import com.haooz.chedule.ui.utils.rememberCardEdgeLight
 import com.haooz.chedule.ui.utils.rememberDefaultEdgeLight
 import com.haooz.chedule.ui.utils.isAppDarkTheme
+import com.haooz.chedule.ui.utils.millisToNextMinute
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import com.haooz.chedule.ui.utils.pagerAxisTakeoverGesture
 import com.haooz.chedule.viewmodel.CourseViewModel
@@ -173,9 +178,21 @@ fun BlurCard(
         val glassEffects: com.kyant.backdrop.BackdropEffectScope.() -> Unit =
             remember(refraction, blurPx) {
                 {
-                    blur(blurPx)
-                    if (refraction != CardRefractionLevel.OFF) {
-                        lens(refraction.lensRadiusDp.dp.toPx(), refraction.lensStrengthDp.dp.toPx())
+                    // 滑动/翻页进行中降级：blur + lens 是每帧 × 每张玻璃卡各一次 GPU 模糊 + AGSL 着色器。
+                    // 只在**绘制期**读全局系数，不进 remember 的键（否则 lambda 身份随系数变化、
+                    // drawBackdrop 判不等并整块重建绘制缓存）；系数归零时一个 effect 都不追加 →
+                    // RenderEffect 为空 → 走 canDirectBlit 直采共享预模糊层，连每卡离屏录制一起省掉。
+                    val glassFactor = glassPerfFactor()
+                    if (glassFactor > 0.01f) {
+                        blur(blurPx * glassFactor)
+                        if (refraction != CardRefractionLevel.OFF) {
+                            // 折射宽度不乘系数、只淡强度：宽度一起乘会让高光环向边缘收拢/扫过
+                            //（库 effects/Lens.kt 里 refractionHeight 才是高光环宽度；padding 也按它变）
+                            lens(
+                                refraction.lensRadiusDp.dp.toPx(),
+                                refraction.lensStrengthDp.dp.toPx() * glassFactor
+                            )
+                        }
                     }
                 }
             }
@@ -204,11 +221,13 @@ fun BlurCard(
                     if (showEdgeLight) {
                         Modifier.edgeLight(
                             shape = ContinuousRoundedRectangle(cornerRadius),
-                            edgeLight = defaultEdgeLight)
+                            edgeLight = defaultEdgeLight,
+                            fadeAlpha = { glassPerfFactor() })
                     } else
                         Modifier.edgeLight(
                             shape = ContinuousRoundedRectangle(cornerRadius),
-                            edgeLight = rememberCardEdgeLight(baseColor = if (isDark) Color.Black else Color.White))
+                            edgeLight = rememberCardEdgeLight(baseColor = if (isDark) Color.Black else Color.White),
+                            fadeAlpha = { glassPerfFactor() })
                 )
         ) {
             content()
@@ -224,6 +243,44 @@ fun BlurCard(
     }
 }
 
+
+/**
+ * 假期余额卡（本地定制 v27）：整宽卡片 + 自动换行（旧实现写死 64dp 高度会裁掉长句）。
+ *
+ * 点击进假期设置 —— 与旧实现一致（旧版是 startActivity，新架构走路由，不新增 Activity）。
+ */
+@Composable
+private fun HolidayBalanceCard(
+    text: String,
+    wallpaperBackdrop: Backdrop?,
+    blurRadius: Float,
+    surfaceOpacity: Float,
+    modifier: Modifier = Modifier,
+) {
+    val appRouter = LocalAppRouter.current
+    BlurCard(
+        cornerRadius = 20.dp,
+        wallpaperBackdrop = wallpaperBackdrop,
+        blurRadius = blurRadius,
+        surfaceOpacity = surfaceOpacity,
+        modifier = modifier
+            .fillMaxWidth()
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                // 关掉默认涟漪：与 MIUI 风格不符（旧实现同款处理）
+                indication = null,
+            ) { appRouter.navigate(AppRoute.HolidaySettings) }
+    ) {
+        Text(
+            text = text,
+            style = MiuixTheme.textStyles.body1.copy(fontSize = 15.sp, fontWeight = FontWeight.Medium),
+            color = MiuixTheme.colorScheme.onSurface,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 18.dp, vertical = 14.dp)
+        )
+    }
+}
 
 @Composable
 private fun CourseItemContent(course: Course, sectionTimes: Map<Int, String>, pageDate: LocalDate = todayLocalDate(), showClassroom: Boolean = true, showTeacher: Boolean = true) {
@@ -287,27 +344,41 @@ private fun CourseItemContent(course: Course, sectionTimes: Map<Int, String>, pa
             courseStatus = if (pageDate < today) "已结束" else "未开始"
             return@LaunchedEffect
         }
+        // 时间来源在本组合内固定：解析不出来就停在「未知」，不必进循环；
+        // 提前排除 null 也让循环里能直接用这两个非空时刻。
+        if (startTime == null || endTime == null) {
+            if (courseStatus != "未知") courseStatus = "未知"
+            return@LaunchedEffect
+        }
+        val startClock: LocalTime = startTime
+        val endClock: LocalTime = endTime
         while (true) {
             val now = nowLocalTime()
-            when {
-                startTime == null || endTime == null -> {
-                    if (courseStatus != "未知") courseStatus = "未知"
-                    // 本组合内时间来源固定，未知状态不会自行变化
-                    return@LaunchedEffect
-                }
-                now < startTime -> {
+            // 下一次唤醒间隔。原来固定 1s：一屏几十张卡就是几十次/秒的
+            // nowLocalTime + 比较，纯空转，而卡片只标「未开始/进行中/已结束」三种状态。
+            val nextTickMs = when {
+                now < startClock -> {
                     if (courseStatus != "未开始") courseStatus = "未开始"
+                    // 睡到开课时刻，但上限 60s —— 保持与改造前「跨天/日期变化最多晚 1 分钟
+                    // 才发现」完全一致的边界行为，不引入新的跨日语义。
+                    val untilStart = millisBetween(now, startClock)
+                    untilStart.coerceIn(1_000L, 60_000L)
                 }
-                now > endTime -> {
+                now > endClock -> {
                     if (courseStatus != "已结束") courseStatus = "已结束"
                     // 当天内状态不会再变
                     return@LaunchedEffect
                 }
                 else -> {
                     if (courseStatus != "进行中") courseStatus = "进行中"
+                    // 上游 v1.6.0beta31 起这张卡不再显示「还剩 X 分钟」（倒计时整块挪进今日助手），
+                    // 本分支没有可写的状态了：循环里唯一还会变的只剩「进行中 → 已结束」这一次翻转，
+                    // 所以直接睡到下课时刻（上限 60s，与未开始分支同一口径）。
+                    val untilEnd = millisBetween(now, endClock)
+                    untilEnd.coerceIn(1_000L, 60_000L)
                 }
             }
-            delay(1000L.milliseconds)
+            delay(nextTickMs)
         }
     }
 
@@ -767,6 +838,35 @@ fun TodayScreen(
                     }
                 }
 
+                // 假期余额卡（本地定制 v27）：假期期间显示「今天是X第 N 天 · 还剩 M 天」。
+                // 全用 commonMain 的纯日期口径（HolidayManager / HolidayCountdown），不引 Context；
+                // 开启状态与提醒侧读同一组设置，只在「最后 N 天」开始出现（N=0 不限）。
+                // holidayDataTick 入键：从设置页回来（主界面 resume 递增）会重读开关。
+                val holidayBalanceText = remember(
+                    isPageToday, pageDate, holidayVersion, holidayDataTick, dataVersion,
+                ) {
+                    if (!isPageToday) {
+                        null
+                    } else if (!resolveRepository.getReturnDayBalanceEnabled()) {
+                        null
+                    } else {
+                        val block = HolidayCountdown.holidayBlockAt(
+                            HolidayManager.loadAllByYear(),
+                            pageDate,
+                        )
+                        val daysLeft = block?.let { pageDate.daysUntil(it.endDate) }
+                        val leadDays = resolveRepository.getReturnDayBalanceLeadDays()
+                        if (block == null || daysLeft == null || !(leadDays <= 0 || daysLeft < leadDays)) {
+                            null
+                        } else {
+                            val totalDays = block.startDate.daysUntil(block.endDate) + 1
+                            val dayIndex = (totalDays - daysLeft).coerceIn(1, totalDays.coerceAtLeast(1))
+                            val head = "今天是${block.name.ifBlank { "假期" }}第 $dayIndex 天"
+                            if (daysLeft > 0) "$head · 还剩 $daysLeft 天" else "$head · 最后一天"
+                        }
+                    }
+                }
+
                 val tomorrowCourses = remember(
                     isPageToday, pageDate, courses, dataVersion, holidayVersion, classStartTime,
                     totalWeeks, sectionTimes, morningSections, afternoonSections, eveningSections,
@@ -868,6 +968,16 @@ fun TodayScreen(
                             ),
                             verticalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
+                            if (holidayBalanceText != null) {
+                                item {
+                                    HolidayBalanceCard(
+                                        text = holidayBalanceText,
+                                        wallpaperBackdrop = if (hasWallpaper) cardBackdrop else null,
+                                        blurRadius = cardBlurRadius,
+                                        surfaceOpacity = courseCardOpacity,
+                                    )
+                                }
+                            }
                             addCourseSections(morningCourses, afternoonCourses, eveningCourses, pageCourses, isPageToday, pageDate, pageWeek, courses, hiddenCourseIds, sectionTimes, onCourseClick, if (hasWallpaper) cardBackdrop else null, cardBlurRadius, courseCardOpacity, showClassroom, showTeacher, isHolidayDate = pageResolution.isHolidayDate)
                         }
                     }
@@ -941,6 +1051,16 @@ fun TodayScreen(
                                         blurRadius = cardBlurRadius,
                                         surfaceOpacity = highlightCardOpacity,
                                     )
+                                )
+                            }
+                        }
+                        if (holidayBalanceText != null) {
+                            item {
+                                HolidayBalanceCard(
+                                    text = holidayBalanceText,
+                                    wallpaperBackdrop = if (hasWallpaper) cardBackdrop else null,
+                                    blurRadius = cardBlurRadius,
+                                    surfaceOpacity = courseCardOpacity,
                                 )
                             }
                         }
@@ -1582,7 +1702,8 @@ private fun QuoteCard(
             if (nextScene != scene) scene = nextScene
             val nextHour = nowLocalTime().hour
             if (nextHour != hour) hour = nextHour
-            delay(1_000L.milliseconds)
+            // 场景/整点都是「分钟以上」粒度：睡到下一个整分即可（ceil 口径，见 MinuteTick）。
+            delay(millisToNextMinute().milliseconds)
         }
     }
 
@@ -1641,9 +1762,17 @@ private fun CourseSectionTitle(
         val titleEffects: com.kyant.backdrop.BackdropEffectScope.() -> Unit =
             remember(refraction, blurPx) {
                 {
-                    blur(blurPx)
-                    if (refraction != CardRefractionLevel.OFF) {
-                        lens(refraction.lensRadiusDp.dp.toPx(), refraction.lensStrengthDp.dp.toPx())
+                    // 分组标题与卡片同一套降级口径（绘制期读、不进 remember 键；归零不追加 effect）
+                    val glassFactor = glassPerfFactor()
+                    if (glassFactor > 0.01f) {
+                        blur(blurPx * glassFactor)
+                        if (refraction != CardRefractionLevel.OFF) {
+                            // 折射宽度不乘系数、只淡强度（宽度一起乘会「扫过」+ 层几何每帧抖）
+                            lens(
+                                refraction.lensRadiusDp.dp.toPx(),
+                                refraction.lensStrengthDp.dp.toPx() * glassFactor
+                            )
+                        }
                     }
                 }
             }
@@ -1668,7 +1797,11 @@ private fun CourseSectionTitle(
                     onDrawSurface = titleSurface
                 )
                 // 标题与课程卡一致用淡描边；亮版只留给今日助手/格言
-                .edgeLight(shape = shape, edgeLight = rememberCardEdgeLight(baseColor = if (isDark) Color.Black else Color.White))
+                .edgeLight(
+                    shape = shape,
+                    edgeLight = rememberCardEdgeLight(baseColor = if (isDark) Color.Black else Color.White),
+                    fadeAlpha = { glassPerfFactor() }
+                )
         ) {
             Text(
                 text = text,

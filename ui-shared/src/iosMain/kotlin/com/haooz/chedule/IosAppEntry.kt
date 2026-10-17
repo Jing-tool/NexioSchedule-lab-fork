@@ -61,6 +61,7 @@ import com.haooz.chedule.ui.navigation.LocalAppRouter
 import com.haooz.chedule.ui.navigation.LocalBackupRoute
 import com.haooz.chedule.ui.navigation.PreferenceSettingsRoute
 import com.haooz.chedule.ui.navigation.PrivacyPolicyRoute
+import com.haooz.chedule.ui.navigation.ReminderTestRoute
 import com.haooz.chedule.ui.navigation.UpdateSettingsRoute
 import com.haooz.chedule.ui.navigation.WebImportRoute
 import com.haooz.chedule.ui.navigation.WebDavSettingsRoute
@@ -353,6 +354,8 @@ internal fun NexioIosRouteContent(router: AppRouter, route: AppRoute) {
                 },
             )
         }
+        // 通知 / 超级岛 / 实时动态测试：iOS 没有 Android 的通知通道，共享页显示空状态
+        AppRoute.ReminderTest -> ReminderTestRoute(router)
         // WebDAV：备份/恢复本体已在 :core；恢复成功后要重排提醒
         AppRoute.WebDavSettings -> WebDavSettingsRoute(
             router = router,

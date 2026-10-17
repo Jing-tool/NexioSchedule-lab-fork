@@ -66,12 +66,21 @@ interface ReminderController {
      * 于是"课前在跳秒、上课后变静态文案"被用户读成"下课倒计时飞了"。
      * 规则：用户显式选过就听用户的；没设过（-1）跟随课前 B 区。
      *
+     * ★ 两边的**值空间不同**，不能把课前那个值直接透传过去：
+     *   · 课前 B 区：0=课程名称 / 1=上课地点 / 2=倒计时（三个选项）
+     *   · 课中 B 区：0=正在上课 / 1=距下课倒计时（这块区域只放得下这两个）
+     *   所以"跟随课前"要**翻译**：课前是倒计时(2) → 课中给 1（距下课倒计时）；
+     *   其余（课程名称/上课地点，课中放不下）→ 课中给 0（正在上课）。
+     *   直接把 1 或 2 透传会让课中落到不存在的模式上（when 没 else 就会走空）。
+     *
      * ★ 判定**只此一处**：设置页（ui-shared）与 androidApp 的 IslandNotificationHelper 都调它，
      *   谁也别再裸读 prefs 各写一套 —— 这两边过去各写一套正是那个 bug 的根因。
      * 默认实现即完整语义，平台侧不需要重写。
+     *
+     * @param inClassMode 课中 B 区**显式**选择；没设过必须传哨兵 -1（不是 0，0 是"正在上课"）。
      */
     fun effectiveInClassRightMode(preClassMode: Int, inClassMode: Int): Int =
-        if (inClassMode >= 0) inClassMode else preClassMode
+        if (inClassMode >= 0) inClassMode else if (preClassMode == 2) 1 else 0
 
     /** Shizuku 服务是否在运行 */
     fun isShizukuRunning(): Boolean
@@ -92,6 +101,34 @@ interface ReminderController {
 
     /** 当前系统版本是否有「实况通知」相关设置入口（Android = SDK_INT >= 36） */
     val supportsPromotedNotifications: Boolean
+
+    /**
+     * 本平台有没有「通知 / 超级岛 / 实时动态测试」页可测的场景。
+     *
+     * 默认 false：桌面/iOS 没有 Android 的通知通道、超级岛与实时动态，设置页据此
+     * **整个不渲染**那个入口 —— 别让用户点进一个空页面（照 [supportsLiveActivity] 的先例，
+     * 平台侧不需要重写；Android 实现返回 true）。
+     *
+     * ⚠ 接口属性不能写初始化式（`val x: Boolean = false` 在接口里编不过），默认值用默认 getter。
+     */
+    val supportsReminderTestPage: Boolean get() = false
+
+    // —— 提醒体检（只读；默认实现按「查不到 = 不报故障」处理，与体检卡的兜底一致）——
+
+    /**
+     * 提醒通道的创建 / 停用状态。**列表里的 null 元素 = 该通道还没建出来** ——
+     * 与「被用户停用」是两回事：全新安装时通道尚未创建（Application 启动才建），
+     * 报成「N 个通道被停用」就是假警报（真机踩过）。
+     *
+     * 默认空列表 = 该平台没有 Android 的通知通道概念（桌面/iOS 体检按正常显示）。
+     */
+    fun notificationChannelStates(): List<ReminderChannelState?> = emptyList()
+
+    /** 系统当前是否处于勿扰 / 静音（与 App 自己的「上课勿扰」无关；读不到按 false） */
+    fun isSystemDndActive(): Boolean = false
+
+    /** 系统是否限制了本应用的后台运行（自启动体检项；读不到按 false） */
+    fun isBackgroundRestricted(): Boolean = false
 
     // —— 权限 / 系统设置页（onResult 在返回后触发）——
 
@@ -132,6 +169,17 @@ interface ReminderController {
         const val MODE_PRIORITY = 2
     }
 }
+
+/**
+ * 一条通知通道的体检状态（只有 Android 有「通道」概念）。
+ * 列表里用 **null** 表示「通道尚未创建」，见 [ReminderController.notificationChannelStates]。
+ */
+data class ReminderChannelState(
+    /** 通道 id（Android = NotificationChannel.id） */
+    val id: String,
+    /** 用户是否把这个通道停用了（importance == NONE） */
+    val disabled: Boolean,
+)
 
 /**
  * 桌面/iOS 的空实现：探测返回 false / 0，发起类方法不动作，权限类回调按「被拒绝」（granted=false），

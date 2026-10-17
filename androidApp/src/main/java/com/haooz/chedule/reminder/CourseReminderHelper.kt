@@ -32,6 +32,7 @@ import com.haooz.chedule.data.HolidayCourseExclusion
 import com.haooz.chedule.data.HolidayBeforeCourseExclusion
 import com.haooz.chedule.data.HolidayEndCourseExclusion
 import com.haooz.chedule.data.HolidayManager
+import com.haooz.chedule.data.ReturnDayReminder
 import com.haooz.chedule.data.TeachingWeekPosition
 import com.haooz.chedule.ui.activities.MainActivity
 import com.haooz.chedule.widget.WidgetUpdateCache
@@ -118,6 +119,17 @@ object CourseReminderHelper {
     const val LIVE_TEST_STARTED_ID = 5101
     const val LIVE_TEST_IN_CLASS_ID = 5102
 
+    /** 「明天返校」原生实时动态通知 ID（与小米岛 ID 分开，互不干扰） */
+    const val RETURN_DAY_LIVE_ID = 2100
+
+    /** 假期余额 / 返校准备清单的精确闹钟类型与请求码（自续：到点发送后顺手排下一天） */
+    const val TYPE_RETURN_DAILY_BALANCE = 30
+    const val TYPE_RETURN_DAILY_PREP = 31
+    private const val RC_RETURN_BALANCE_ALARM = 8101
+    private const val RC_RETURN_PREP_ALARM = 8102
+    private const val NOTIFY_ID_RETURN_BALANCE = 300
+    private const val NOTIFY_ID_RETURN_PREP = 301
+
     private fun liveCountdownId(testMode: Boolean): Int =
         if (testMode) LIVE_TEST_COUNTDOWN_ID else LIVE_COUNTDOWN_ID
 
@@ -182,6 +194,9 @@ object CourseReminderHelper {
     const val CHANNEL_REMINDER_NAME = "课程提醒通知"
     const val CHANNEL_LIVE_ID = "course_reminder_live"
     const val CHANNEL_LIVE_NAME = "课程提醒实况"
+
+    /** 假期余额 / 返校清单专用通道：与课前提醒分开，方便在系统设置里单独控制 */
+    const val CHANNEL_HOLIDAY_ID = "course_reminder_holiday"
 
     // 发送去重：JSON map(courseId->时间戳)+日期，跨日失效。
     // 常规提醒 60 分钟窗口不重发；超级岛当天只发一次（原生倒计时自行跳秒，重发会弹出岛）。
@@ -349,19 +364,31 @@ object CourseReminderHelper {
     }
 
     /**
-     * 课程结束时刻的时间戳；结束不晚于开始（跨午夜）时顺延一天。
+     * 由「开始毫秒 + 结束时间字符串」算结束毫秒，**处理跨零点的课**。
      *
-     * 不加这一层的话 `23:00 - 00:30` 的下课时刻会落在当天 00:30，
-     * 早于上课时刻 → 课中进度、剩余分钟、下课提醒全部算成负数。
+     * 例：晚自习 23:30–00:30。`parseTimeToTodayMillis("00:30")` 拿到的是**今天** 00:30，
+     * 比开始时刻早 23 小时，下游 `endMillis <= startMillis` 会一律判无效 →
+     * 课中卡 / 课中岛 / 进度永远不会出现，只闪一条「已上课」
+     * （用户视角就是"上课提醒了，但没有课中进度"）。ClassDndHelper 早就有同样的处理，
+     * 但只覆盖了它自己那条链 —— 这里统一成一个入口，4 处调用都走它。
+     *
+     * 判据：结束早于开始、且相差超过 12 小时 → 视为跨零点，补一天。
+     * 真正的数据错误（如 10:00–09:00 只差 1 小时）不会被误判成跨天。
      */
-    fun courseEndMillis(startTime: String?, endTime: String?): Long {
-        val end = parseTimeToTodayMillis(endTime)
-        if (end <= 0L) return end
-        val start = parseTimeToTodayMillis(startTime)
-        // 跨午夜 = 结束不晚于开始（23:00-00:30 的 end 时间戳落在当天 00:30，早于 start），
-        // 此时顺延一天；普通同日课（end > start）原样返回。
-        return if (start > 0L && end <= start) end + 24L * 60L * 60L * 1000L else end
+    fun endMillisFor(startMillis: Long, endTime: String?): Long {
+        val raw = parseTimeToTodayMillis(endTime)
+        if (raw <= 0L || startMillis <= 0L) return raw
+        val day = 24L * 60L * 60L * 1000L
+        return if (raw < startMillis && startMillis - raw > day / 2) raw + day else raw
     }
+
+    /**
+     * 课程结束时刻的时间戳；跨午夜时顺延一天。
+     *
+     * 保留这个名字只为兼容既有调用点，内部一律委托 [endMillisFor]（单一真源）。
+     */
+    fun courseEndMillis(startTime: String?, endTime: String?): Long =
+        endMillisFor(parseTimeToTodayMillis(startTime), endTime)
 
     /**
      * 课表边界闹钟专用：课前提醒点、上课瞬间、下课瞬间。
@@ -448,6 +475,16 @@ object CourseReminderHelper {
             }
             // 立即占位：检查与更新必须原子，否则两条并发线程会同时通过判断、各全量重排一次
             lastServiceStartAt = now
+        }
+        // 启动路径自愈：上次给超级岛"绕白名单"时把小米推送服务断网，若进程在恢复前被杀，
+        // 网络会一直是关的。这里补一次恢复。
+        //
+        // **必须避开正在进行的绕白名单窗口**：自愈会调 setXmsfNetworkingEnabled(true)，
+        // 若恰好落在"关网 → notify → 恢复"的窗口里就把窗口掀了 ——
+        // 那条通知是在"网已恢复"的状态下发出去的，不被当成焦点通知处理，
+        // 用户看到的就是**普通通知**而不是超级岛（连发多条时尤其容易踩上）。
+        if (!IslandNotificationHelper.isXmsfBypassInFlight()) {
+            runCatching { com.haooz.chedule.shizuku.ShizukuManager.healPendingXmsfRestore(context) }
         }
         doStartReminderService(context, repository)
     }
@@ -754,7 +791,8 @@ object CourseReminderHelper {
                         (useIsland && hasIslandPreClassSentToday(context, dedupId))
                     if (!alreadySent) {
                         val startMillis = todayMillis(startHour, startMinute)
-                        val endMillis = courseEndMillis(startTime, getCourseEndTime(course, repository))
+                        // 跨零点的课结束时在次日：统一走 endMillisFor，别用「今天解析」的直算
+                        val endMillis = endMillisFor(startMillis, getCourseEndTime(course, repository))
                         sendPreClassNotification(
                             context, alarmManager, repository, course, startTime,
                             useIsland, startMillis, endMillis
@@ -1188,6 +1226,55 @@ object CourseReminderHelper {
         }
     }
 
+    /**
+     * 次日提醒的文案 —— **主路径（AlarmReceiver）与测试页共用这一份**。
+     *
+     * 原来这段文本写死在 AlarmReceiver 的 onReceive 里，结果是：
+     * 测试页没法单独验这条通知，而且以后改文案得记得改一处不存在的地方。
+     * 抽出来后两边都调它，文案只有一份。
+     */
+    fun nextDayReminderText(context: Context, repository: CourseRepository): Pair<String, String> =
+        nextDayReminderText(getTomorrowCourses(context), repository)
+
+    /**
+     * 同上，但课表已由调用方取好 —— AlarmReceiver 里同一份"明天课表"还要给返校提醒用，
+     * 传进来可以避免一次闹钟把课表解析两遍。
+     */
+    fun nextDayReminderText(
+        tomorrowCourses: List<Course>,
+        repository: CourseRepository,
+    ): Pair<String, String> {
+        if (tomorrowCourses.isEmpty()) return "明日无课" to "明天没有课程安排"
+        val firstCourse = tomorrowCourses.first()
+        val firstStart = getCourseStartTime(firstCourse, repository)
+        val firstHour = firstStart?.split(":")?.firstOrNull()?.toIntOrNull() ?: 9
+        val details = when {
+            firstHour < 9 -> "明早有早${chineseNumberHour(firstHour)}，${firstCourse.name}"
+            firstHour < 12 -> "明早有课，${firstCourse.name} $firstStart"
+            firstHour < 18 -> "下午有课，${firstCourse.name} $firstStart"
+            else -> "晚上有课，${firstCourse.name} $firstStart"
+        }
+        return "明天共${tomorrowCourses.size}节课" to details
+    }
+
+    /** 星期几/钟点用的中文数字（原来在 AlarmReceiver 里，随文案一起搬过来） */
+    private fun chineseNumberHour(n: Int): String {
+        if (n <= 0 || n > 23) return n.toString()
+        val digit = listOf("", "一", "二", "三", "四", "五", "六", "七", "八", "九")
+        return when {
+            n < 10 -> digit[n]
+            n < 20 -> "十" + digit[n - 10]
+            else -> digit[n / 10] + "十" + digit[n % 10]
+        }
+    }
+
+    /** 测试用：立刻发一条次日提醒。不写任何"已发"状态，不影响正式提醒。 */
+    fun sendNextDayReminderNow(context: Context) {
+        val repository = CourseRepository()
+        val (title, body) = nextDayReminderText(context, repository)
+        showReminderNotification(context, TYPE_NEXT_DAY, title, body)
+    }
+
     fun getTomorrowCourses(context: Context): List<Course> =
         resolveDaySchedule(context, forTomorrow = true).courses
 
@@ -1448,7 +1535,58 @@ object CourseReminderHelper {
         manager.notify(startedNotificationId, startedNotification)
     }
 
+    /**
+     * 通道是**进程级**系统状态，建一次就够。
+     *
+     * 原实现每次发通知都 `createNotificationChannel` ×2 —— 那就是 2 次 binder 往返 +
+     * 2 个 NotificationChannel 分配。课中提醒是**每分钟**发一次的，
+     * 等于每分钟白付两次跨进程调用去设置同一个通道。
+     *
+     * 但**不能只用一个布尔量永久跳过**：用户可以在系统设置里把通道删掉，
+     * 而 `createNotificationChannel` 正好是"被删了会重建"的那条路径；
+     * 永久跳过会让之后的通知静默丢弃。所以做成 10 分钟心跳复核：
+     * 每分钟那条热路径照样零开销，通道被删也能在 10 分钟内自愈。
+     */
+    private const val CHANNEL_ENSURE_INTERVAL_MS = 10 * 60 * 1000L
+
+    // 初值取负一个周期（**不能是 0**）：开机不足 10 分钟时 elapsedRealtime() 本身就小于周期，
+    // 用 0 会让「进程启动后的第一次」也命中节流、什么都不建 —— 又回到"通道还没建"。
+    @Volatile
+    private var notificationChannelsEnsuredAt = -CHANNEL_ENSURE_INTERVAL_MS
+
+    /**
+     * 启动时就把三条通知通道建出来。
+     *
+     * 原来它们只在「要发通知之前」才创建，于是**全新安装 / 清数据后、第一条提醒发出之前**，
+     * 系统里根本不存在这些通道 —— 「提醒体检」会把"通道不存在"误判成"通道被停用"
+     *（实测会报"有 3 个通道被停用，对应提醒不会显示"，是假警报）。
+     * 启动时建好还顺带解决另一件事：用户能提前在系统设置里单独配置每条通道的响铃/震动。
+     */
+    fun ensureAllNotificationChannels(context: Context) {
+        runCatching {
+            ensureNotificationChannels(context)
+            ensureHolidayChannel(context)
+        }
+    }
+
+    /** 假期余额 / 返校清单专用通道。 */
+    private fun ensureHolidayChannel(context: Context) {
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (manager.getNotificationChannel(CHANNEL_HOLIDAY_ID) != null) return
+        manager.createNotificationChannel(
+            NotificationChannel(
+                CHANNEL_HOLIDAY_ID,
+                "假期与返校",
+                NotificationManager.IMPORTANCE_DEFAULT,
+            ).apply {
+                description = "假期余额、返校准备清单"
+            }
+        )
+    }
+
     private fun ensureNotificationChannels(context: Context) {
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - notificationChannelsEnsuredAt < CHANNEL_ENSURE_INTERVAL_MS) return
         val manager = context.getSystemService(NotificationManager::class.java)
         val alertChannel = NotificationChannel(
             CHANNEL_REMINDER_ID,
@@ -1476,10 +1614,18 @@ object CourseReminderHelper {
         }
         manager.createNotificationChannel(alertChannel)
         manager.createNotificationChannel(liveChannel)
+        notificationChannelsEnsuredAt = android.os.SystemClock.elapsedRealtime()
     }
 
-    fun showReminderNotification(context: Context, id: Int, title: String, message: String) {
+    fun showReminderNotification(
+        context: Context,
+        id: Int,
+        title: String,
+        message: String,
+        channelId: String = CHANNEL_REMINDER_ID,
+    ) {
         ensureNotificationChannels(context)
+        if (channelId == CHANNEL_HOLIDAY_ID) ensureHolidayChannel(context)
 
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -1492,7 +1638,7 @@ object CourseReminderHelper {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val notification = NotificationCompat.Builder(context, CHANNEL_REMINDER_ID)
+        val notification = NotificationCompat.Builder(context, channelId)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentTitle(title)
             .setContentText(message.replace("\n", " "))
@@ -1637,28 +1783,94 @@ object CourseReminderHelper {
 
     /**
      * 测试实时活动：与超级岛测试同一套固定课程，不依赖真实课表。
-     * 课前 70 秒倒计时 + 课中 120 秒，便于验证倒计时 / 已上课 / 课中进度全链路。
+     * 默认课前 70 秒倒计时 + 课中 120 秒；场景可覆盖时长并直接落到指定状态。
      */
-    fun sendTestLiveNotification(context: Context) {
+    fun sendTestLiveNotification(
+        context: Context,
+        /** 距「上课」还有多久（0 = 已经上课了） */
+        startDelayMs: Long = 70_000L,
+        /** 课时长度 */
+        durationMs: Long = 120_000L,
+        /** 直接落到哪个状态；COUNTDOWN 走完整时序（到点由对账/闹钟自动切换） */
+        phase: ReminderTestPhase = ReminderTestPhase.COUNTDOWN,
+    ) {
         val courseName = "大学英语Ⅱ"
         val classroom = "博A201"
         val section = "第3~4节"
-        val startMillis = System.currentTimeMillis() + 70_000L
-        val endMillis = startMillis + 120_000L
-        val startTime = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
-            .format(java.util.Date(startMillis))
-        showPreClassCountdownNotification(
-            context = context,
-            courseName = courseName,
-            classroom = classroom,
-            section = section,
-            startTime = startTime,
-            startMillis = startMillis,
-            endMillis = endMillis,
-            testMode = true
-        )
-        // 测试课也要走「上课自动开启、下课自动关闭」，否则勿扰链路在测试里跑不到
+        val startMillis = System.currentTimeMillis() + startDelayMs
+        val endMillis = startMillis + durationMs
+        val fmt = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
+        val startTime = fmt.format(java.util.Date(startMillis))
+        val endTime = fmt.format(java.util.Date(endMillis))
+
+        if (phase == ReminderTestPhase.COUNTDOWN) {
+            showPreClassCountdownNotification(
+                context = context,
+                courseName = courseName,
+                classroom = classroom,
+                section = section,
+                startTime = startTime,
+                startMillis = startMillis,
+                endMillis = endMillis,
+                testMode = true
+            )
+            // 测试课也要走「上课自动开启、下课自动关闭」，否则勿扰链路在测试里跑不到
+            ClassDndHelper.syncTestClassDndAlarms(context)
+            return
+        }
+
+        // 「已上课 / 课中」两态都读 countdown_state（对账、下课收起、进度都靠它），
+        // 所以先落一份与主路径同构的状态，再直接进对应状态（绕过用户开关）。
+        writeTestCountdownState(context, courseName, classroom, section, startTime, startMillis, endMillis)
         ClassDndHelper.syncTestClassDndAlarms(context)
+        if (phase == ReminderTestPhase.STARTED) {
+            // 已上课态不带 classroom（真实路径也不传），测试路径保持一致
+            showStartedLiveNotification(
+                context = context,
+                courseName = courseName,
+                startTime = startTime,
+                testMode = true,
+            )
+        } else {
+            showOrUpdateInClassLiveNotification(
+                context = context,
+                courseName = courseName,
+                classroom = classroom,
+                endTime = endTime,
+                startMillis = startMillis,
+                endMillis = endMillis,
+                countdownNotificationId = liveCountdownId(true),
+                testMode = true,
+            )
+        }
+    }
+
+    /** 测试用：写与 showPreClassCountdownNotification 同构的倒计时状态（键名必须一致） */
+    private fun writeTestCountdownState(
+        context: Context,
+        courseName: String,
+        classroom: String,
+        section: String,
+        startTime: String,
+        startMillis: Long,
+        endMillis: Long,
+    ) {
+        context.getSharedPreferences("countdown_state", Context.MODE_PRIVATE).edit {
+            putBoolean("active", true)
+                .putBoolean("test_mode", true)
+                .putBoolean("in_class_active", false)
+                .putString("courseName", courseName)
+                .putString("classroom", classroom)
+                .putString("section", section)
+                .putString("startTime", startTime)
+                .putLong("startMillis", startMillis)
+                .putLong("endMillis", endMillis)
+                .putInt("notificationId", liveCountdownId(true))
+                .remove("last_displayed_minutes")
+                .remove("last_in_class_minutes")
+                .remove("last_in_class_progress")
+                .remove("started_shown")
+        }
     }
 
     // 每分钟由 WidgetRefreshReceiver 驱动；同 notifyId 重复 notify 无痕更新
@@ -2121,7 +2333,7 @@ object CourseReminderHelper {
             val islandHit = useIsland && hasIslandPreClassSentToday(context, dedupId11)
             if (!inWindow || dedupHit || islandHit) continue
             val startMillis = parseTimeToTodayMillis(startTime)
-            val endMillis = courseEndMillis(startTime, getCourseEndTime(course, repository))
+            val endMillis = endMillisFor(startMillis, getCourseEndTime(course, repository))
             sendPreClassNotification(
                 context, alarmManager, repository, course, startTime,
                 useIsland, startMillis, endMillis
@@ -2139,4 +2351,451 @@ object CourseReminderHelper {
         val m = parts[1].toIntOrNull() ?: return Int.MAX_VALUE
         return h * 60 + m
     }
+
+    // ══ 假期余额 / 返校准备清单 /「明天返校」实时动态 ═══════════════════════
+    //
+    // 兜底搭在既有「小部件刷新链」上（WidgetRefreshReceiver 调 checkDailyReturnDayNotifications），
+    // **不新增闹钟类型**；同时排一对自续精确闹钟做到点即发（空闲时刷新链最坏晚约 30 分钟）。
+    // 都只用**普通通知**：不常驻、不提升，不占超级岛/实时动态的位置 —— 那是最容易出暗病的地方。
+
+    private const val RETURN_DAY_STATE_PREFS = "return_day_notify_state"
+    private const val KEY_RETURN_BALANCE_DATE = "balance_date"
+    private const val KEY_RETURN_PREP_DATE = "prep_date"
+    private const val KEY_RETURN_LIVE_PUSH = "return_live_push_at"
+    private const val KEY_RETURN_BALANCE_ALARM_AT = "balance_alarm_at"
+    private const val KEY_RETURN_BALANCE_ALARM_SET = "balance_alarm_set"
+    private const val KEY_RETURN_PREP_ALARM_AT = "prep_alarm_at"
+    private const val KEY_RETURN_PREP_ALARM_SET = "prep_alarm_set"
+
+    /**
+     * 假期余额 / 返校准备清单的每日提醒。
+     *
+     * 余额 = 假期期间**每天**一条，**含最后一天**（最后一天换「最后一天」的文案）；
+     * 清单 = 返校日到点一条（默认关，文案可自定义）。二者都用 SP 做「当天只发一次」去重。
+     *
+     * ⚠ 旧实现有两个排除条件（`daysLeft > 0` 与 `!isReturnDay(today)`）：假期的最后一天必然同时命中这两条
+     *（剩 0 天 + 次日要上课），于是整个假期里最该提醒的那天一条都不发。
+     * 现在统一为：只要在假期内就发。
+     */
+    fun checkDailyReturnDayNotifications(context: Context) {
+        val repository = CourseRepository()
+        val today = java.time.LocalDate.now()
+        val todayKey = today.toString()
+        val state = context.getSharedPreferences(RETURN_DAY_STATE_PREFS, Context.MODE_PRIVATE)
+
+        val span = ReturnDayReminder.currentHolidaySpan(context, today)
+        val balanceTarget = java.time.LocalTime.of(
+            repository.getReturnDayBalanceHour(),
+            repository.getReturnDayBalanceMinute(),
+        )
+        if (span != null &&
+            repository.getReturnDayBalanceEnabled() &&
+            balanceLeadDaysAllow(repository, span) &&
+            !java.time.LocalTime.now().isBefore(balanceTarget) &&
+            state.getString(KEY_RETURN_BALANCE_DATE, null) != todayKey
+        ) {
+            val (title, body) = balanceNotificationText(context, repository, span)
+            showReminderNotification(
+                context,
+                NOTIFY_ID_RETURN_BALANCE,
+                title,
+                body,
+                channelId = CHANNEL_HOLIDAY_ID,
+            )
+            state.edit { putString(KEY_RETURN_BALANCE_DATE, todayKey) }
+        }
+
+        // 返校准备清单：返校日到点推一条（默认关）
+        if (repository.getReturnDayPrepEnabled() && ReturnDayReminder.isReturnDay(context, today)) {
+            val prepTarget = java.time.LocalTime.of(
+                repository.getReturnDayPrepHour(),
+                repository.getReturnDayPrepMinute(),
+            )
+            if (!java.time.LocalTime.now().isBefore(prepTarget) &&
+                state.getString(KEY_RETURN_PREP_DATE, null) != todayKey
+            ) {
+                showReminderNotification(
+                    context,
+                    NOTIFY_ID_RETURN_PREP,
+                    prepNotificationTitle(),
+                    prepNotificationBody(repository),
+                    channelId = CHANNEL_HOLIDAY_ID,
+                )
+                state.edit { putString(KEY_RETURN_PREP_DATE, todayKey) }
+            }
+        }
+
+        maybeUpdateReturnDayLiveNotification(context, repository)
+
+        // 精确闹钟（自续）：到点即发，不再只靠刷新链的下一跳。刷新链那套保留作兜底。
+        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        if (repository.getReturnDayBalanceEnabled()) {
+            scheduleReturnDayExactAlarm(
+                context, alarmManager, RC_RETURN_BALANCE_ALARM, TYPE_RETURN_DAILY_BALANCE, balanceTarget,
+                KEY_RETURN_BALANCE_ALARM_AT, KEY_RETURN_BALANCE_ALARM_SET,
+            )
+        } else {
+            cancelReturnDayExactAlarm(
+                context, alarmManager, RC_RETURN_BALANCE_ALARM, TYPE_RETURN_DAILY_BALANCE,
+                KEY_RETURN_BALANCE_ALARM_AT, KEY_RETURN_BALANCE_ALARM_SET,
+            )
+        }
+        if (repository.getReturnDayPrepEnabled()) {
+            scheduleReturnDayExactAlarm(
+                context, alarmManager, RC_RETURN_PREP_ALARM, TYPE_RETURN_DAILY_PREP,
+                java.time.LocalTime.of(
+                    repository.getReturnDayPrepHour(),
+                    repository.getReturnDayPrepMinute(),
+                ),
+                KEY_RETURN_PREP_ALARM_AT, KEY_RETURN_PREP_ALARM_SET,
+            )
+        } else {
+            cancelReturnDayExactAlarm(
+                context, alarmManager, RC_RETURN_PREP_ALARM, TYPE_RETURN_DAILY_PREP,
+                KEY_RETURN_PREP_ALARM_AT, KEY_RETURN_PREP_ALARM_SET,
+            )
+        }
+    }
+
+    /**
+     * 余额通知的标题/正文。**主路径与「立即测试」按钮共用这一份**，别写第二份。
+     *
+     * 「节假日末期课程排除」开着时，最后一天说「收拾一下准备返校吧」；
+     * 关着时说明用户当天并没有返校课，就只说「好好休息」。判据必须是上游那个开关：
+     * 本 fork 早期那套自有豁免偏好已无设置入口，读它会永远得到 false。
+     */
+    private fun balanceNotificationText(
+        context: Context,
+        repository: CourseRepository,
+        span: ReturnDayReminder.HolidaySpan,
+    ): Pair<String, String> {
+        val lastDay = span.daysLeft <= 0
+        val title = if (lastDay) "今天是${span.name}最后一天" else "${span.name}还剩 ${span.daysLeft} 天"
+        val body = when {
+            !lastDay -> "好好休息，返校前我会再提醒你"
+            ReturnDayReminder.isExclusionEnabled(context) -> "最后一天了，收拾一下准备返校吧"
+            else -> "最后一天了，好好休息吧"
+        }
+        return title to body
+    }
+
+    /** 「只在假期最后 N 天开始提醒」：N=0（默认）表示不限制，假期期间每天都提醒。 */
+    private fun balanceLeadDaysAllow(
+        repository: CourseRepository,
+        span: ReturnDayReminder.HolidaySpan,
+    ): Boolean {
+        val lead = repository.getReturnDayBalanceLeadDays()
+        return lead <= 0 || span.daysLeft < lead
+    }
+
+    /** 清单通知标题：按实际时刻选措辞（写死「今晚」在中午会明显说错话）。 */
+    private fun prepNotificationTitle(): String =
+        if (java.time.LocalTime.now().hour >= 16) "今晚返校，别忘了带" else "返校别忘了带这些"
+
+    /** 清单正文：逐行显示；用换行分隔就照用，否则按常见分隔符拆开。 */
+    private fun prepNotificationBody(repository: CourseRepository): String {
+        val raw = repository.getReturnDayPrepText()
+        if (raw.contains('\n')) return raw
+        return raw.split('/', '、', '，', ',')
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .joinToString("\n")
+            .ifBlank { raw }
+    }
+
+    /**
+     * 「立即发一条」——仅供设置页测试按钮使用。
+     *
+     * 与正式提醒**共用同一套文案函数**，但**不写「当天只发一次」去重键**，
+     * 所以随便点、点几次都行，也不会把当天的正式提醒顶掉。
+     */
+    fun sendReturnDayReminderNow(context: Context, prep: Boolean) {
+        val repository = CourseRepository()
+        if (prep) {
+            showReminderNotification(
+                context,
+                NOTIFY_ID_RETURN_PREP,
+                prepNotificationTitle(),
+                prepNotificationBody(repository),
+                channelId = CHANNEL_HOLIDAY_ID,
+            )
+            return
+        }
+        val span = ReturnDayReminder.currentHolidaySpan(context, java.time.LocalDate.now())
+        val (title, body) = if (span != null) {
+            balanceNotificationText(context, repository, span)
+        } else {
+            "假期余额提醒（测试）" to "当前不在假期内，正式提醒会在假期中按设定时间发出"
+        }
+        showReminderNotification(context, NOTIFY_ID_RETURN_BALANCE, title, body, channelId = CHANNEL_HOLIDAY_ID)
+    }
+
+    /**
+     * 把余额/清单的精确闹钟排到「今天该时刻」；已过则排到明天（自续链的锚点）。
+     *
+     * **去抖**：目标触发时刻没变就不重排。这个函数挂在刷新链上，而刷新链在倒计时/岛活跃时
+     * 是**分钟级**的；每次都 setAlarmClock 就是跨进程调用 + 系统侧闹钟图标刷新。
+     * 为兼容「闹钟被系统清掉、进程被杀后 SP 仍在」，保留 6 小时心跳强制重排。
+     */
+    private fun scheduleReturnDayExactAlarm(
+        context: Context,
+        alarmManager: AlarmManager,
+        requestCode: Int,
+        type: Int,
+        target: java.time.LocalTime,
+        triggerKey: String,
+        heartbeatKey: String,
+    ) {
+        val at = Calendar.getInstance().apply {
+            set(Calendar.HOUR_OF_DAY, target.hour)
+            set(Calendar.MINUTE, target.minute)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+            if (timeInMillis <= System.currentTimeMillis()) add(Calendar.DATE, 1)
+        }
+        val trigger = at.timeInMillis
+        val now = System.currentTimeMillis()
+        val state = context.getSharedPreferences(RETURN_DAY_STATE_PREFS, Context.MODE_PRIVATE)
+        val sameTrigger = state.getLong(triggerKey, -1L) == trigger
+        val recentEnough = now - state.getLong(heartbeatKey, 0L) < 6 * 60 * 60 * 1000L
+        if (sameTrigger && recentEnough) return
+
+        val intent = Intent(context, AlarmReceiver::class.java).apply {
+            putExtra(EXTRA_REMINDER_TYPE, type)
+        }
+        val pendingIntent = PendingIntent.getBroadcast(
+            context,
+            requestCode,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        setCourseBoundaryAlarm(alarmManager, trigger, pendingIntent)
+        state.edit {
+            putLong(triggerKey, trigger)
+            putLong(heartbeatKey, now)
+        }
+    }
+
+    private fun cancelReturnDayExactAlarm(
+        context: Context,
+        alarmManager: AlarmManager,
+        requestCode: Int,
+        type: Int,
+        triggerKey: String,
+        heartbeatKey: String,
+    ) {
+        val intent = Intent(context, AlarmReceiver::class.java).apply {
+            putExtra(EXTRA_REMINDER_TYPE, type)
+        }
+        val pendingIntent = PendingIntent.getBroadcast(
+            context,
+            requestCode,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        alarmManager.cancel(pendingIntent)
+        // 清掉去抖状态：开关重新打开时必须能立刻排上
+        context.getSharedPreferences(RETURN_DAY_STATE_PREFS, Context.MODE_PRIVATE)
+            .edit { remove(triggerKey); remove(heartbeatKey) }
+    }
+
+    /**
+     * 「明天返校」原生实时动态：返校日前一晚起，在开始前窗口内**定时重推**，让进度条随时间推进。
+     *
+     * 同样搭在既有刷新链上（不新增闹钟类型），并用 SP 做 15 分钟节流。
+     * 岛开启时不走这里 —— 两个通道互斥。
+     */
+    private fun maybeUpdateReturnDayLiveNotification(
+        context: Context,
+        repository: CourseRepository,
+    ) {
+        if (repository.getIslandNotification() && IslandNotificationHelper.isIslandSupported(context)) return
+        // 功能总开关关掉就不再推（只判 isReturnDay 的话，关掉开关照样会推）。判据是上游那个开关。
+        if (!ReturnDayReminder.isExclusionEnabled(context)) return
+        val today = java.time.LocalDate.now()
+        val tomorrow = today.plusDays(1)
+        val todayIsReturn = ReturnDayReminder.isReturnDay(context, today)
+        val tomorrowIsReturn = ReturnDayReminder.isReturnDay(context, tomorrow)
+        if (!todayIsReturn && !tomorrowIsReturn) return
+        val targetDate = if (todayIsReturn) today else tomorrow
+        val resolution = resolveDaySchedule(context, kxDate(targetDate), repository)
+        val first = resolution.courses.firstOrNull() ?: return
+        val startTime = getCourseStartTime(first, repository) ?: return
+        // 按**目标日期**算起始时刻：用 parseTimeToTodayMillis（按「今天」解析）时，
+        // targetDate=明天 算出来的时间戳已经过去，这一路永远 return ——「明天返校」从没跑过。
+        val startMillis = millisAtDate(targetDate, startTime)
+        if (startMillis <= 0L) return
+        val now = System.currentTimeMillis()
+        // 窗口放到 24 小时：返校提醒是**前一晚**推的，此时距次日傍晚开课可能超过 12 小时。
+        if (now >= startMillis || startMillis - now > 24 * 60 * 60 * 1000L) return
+        val state = context.getSharedPreferences(RETURN_DAY_STATE_PREFS, Context.MODE_PRIVATE)
+        if (now - state.getLong(KEY_RETURN_LIVE_PUSH, 0L) < 15 * 60 * 1000L) return
+        val span = ReturnDayReminder.currentHolidaySpan(context, targetDate)
+        showReturnDayLiveNotification(
+            context = context,
+            courseName = first.name,
+            section = first.getTimeDisplayText(),
+            startTime = startTime,
+            targetDate = targetDate,
+            holidayLabel = span?.name?.takeIf { it.isNotBlank() }?.let { it + "最后一天" },
+            progressPercent = span?.progressPercent,
+        )
+        state.edit { putLong(KEY_RETURN_LIVE_PUSH, now) }
+    }
+
+    /**
+     * 「返校」提醒里的那个日子词 —— **原生实时动态与超级岛共用这一份**。
+     *
+     * 为什么不能写死「明天返校」：`isReturnDay(d) = isRestDay(d) && isSchoolDay(d+1)`，
+     * 所以「返校日」就是假期最后一天；被「节假日末期课程排除」放出来的课（例如第11节晚自习）
+     * 可能是**今晚**的课。此时标题说「明天返校」、正文列今晚的课，自相矛盾。
+     *
+     * 规则（16:00 口径与 prepNotificationTitle 保持一致）：
+     * - 目标日在今天之后 → 「明天返校」（次日提醒走这条）
+     * - 目标日就是今天、首节在 16:00 之后 → 「今晚返校」
+     * - 目标日就是今天、但首节更早 → 「今天返校」
+     * - 其它（理论不可达）→ 「返校」
+     */
+    internal fun returnDayVerb(
+        targetDate: java.time.LocalDate,
+        firstStartTime: String?,
+        today: java.time.LocalDate = java.time.LocalDate.now(),
+    ): String {
+        val days = java.time.temporal.ChronoUnit.DAYS.between(today, targetDate)
+        if (days > 0L) return "明天返校"
+        if (days < 0L) return "返校"
+        val hour = firstStartTime?.substringBefore(':')?.trim()?.toIntOrNull()
+        return if (hour != null && hour < 16) "今天返校" else "今晚返校"
+    }
+
+    /**
+     * 「明天返校」原生实时动态通知。
+     *
+     * 与小米超级岛那条是同一功能的两个通道（提醒设置页的开关互斥：岛开走岛、岛关走原生），
+     * 所以两边必须同步。日子词由 [targetDate] 决定，不写死。
+     */
+    @android.annotation.SuppressLint("NewApi")
+    fun showReturnDayLiveNotification(
+        context: Context,
+        courseName: String,
+        section: String,
+        startTime: String,
+        /** 正文字段所依据的日期（可能今天、可能明天）—— 日子词由它决定，不能写死 */
+        targetDate: java.time.LocalDate,
+        holidayLabel: String?,
+        /** 非空且 API 36+ 时用 ProgressStyle 显示假期进度（复用课中那套实时动态规范） */
+        progressPercent: Int? = null,
+    ) {
+        ensureNotificationChannels(context)
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        // 日子词必须跟着「正文列的是哪天的课」走
+        val verb = returnDayVerb(targetDate, startTime)
+        val title = if (holidayLabel.isNullOrBlank()) verb else verb + " · " + holidayLabel
+        val content = buildString {
+            if (courseName.isNotEmpty()) append(courseName)
+            if (section.isNotEmpty()) append("｜").append(section)
+            if (startTime.isNotEmpty()) append(" ").append(startTime)
+            // 兜底文案不能说"明天要上课"：明天可能只是"要上学但没有课"，那样是假话
+            if (isEmpty()) append(verb).append("，别忘了收拾东西")
+        }
+        val contentIntent = PendingIntent.getActivity(
+            context,
+            RETURN_DAY_LIVE_ID,
+            Intent(context, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val timeoutMs = 12 * 60 * 60 * 1000L
+        // 与课中同源：开关开且 API 36+ 走 ProgressStyle，否则退回 NotificationCompat
+        val useProgressStyle =
+            progressPercent != null && Build.VERSION.SDK_INT >= 36 &&
+                CourseRepository().getLiveProgressStyle()
+        if (useProgressStyle) {
+            val styleBuilder = Notification.Builder(context, CHANNEL_LIVE_ID)
+                .setSmallIcon(R.mipmap.ic_launcher)
+                .setContentTitle(title)
+                .setContentText(content)
+                .setContentIntent(contentIntent)
+                .setOngoing(true)
+                .setOnlyAlertOnce(true)
+                .setShowWhen(false)
+                .setCategory(Notification.CATEGORY_PROGRESS)
+                .setTimeoutAfter(timeoutMs)
+            runCatching {
+                styleBuilder.setStyle(
+                    Notification.ProgressStyle()
+                        .setProgressTrackerIcon(
+                            android.graphics.drawable.Icon.createWithResource(
+                                context,
+                                R.drawable.ic_live_dot,
+                            )
+                        )
+                        .setProgressSegments(listOf(Notification.ProgressStyle.Segment(100)))
+                        // 不用 progressPercent 直接调：它是可空的，Kotlin 不会从 useProgressStyle 这个
+                        // 布尔量里推断出非空（免得踩 smart-cast 编译不过）。
+                        .setProgress((progressPercent ?: 0).coerceIn(0, 100))
+                )
+            }
+            runCatching { styleBuilder.setRequestPromotedOngoing(true) }
+            runCatching { styleBuilder.setShortCriticalText(verb) }
+            manager.notify(
+                RETURN_DAY_LIVE_ID,
+                styleBuilder.build().apply {
+                    flags = flags or Notification.FLAG_ONLY_ALERT_ONCE
+                },
+            )
+            return
+        }
+        val baseBuilder = NotificationCompat.Builder(context, CHANNEL_LIVE_ID)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle(title)
+            .setContentText(content)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(content))
+            .setContentIntent(contentIntent)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setShowWhen(false)
+            .setCategory(
+                if (progressPercent != null) {
+                    Notification.CATEGORY_PROGRESS
+                } else {
+                    Notification.CATEGORY_REMINDER
+                }
+            )
+            .setShortCriticalText(verb)
+            .setRequestPromotedOngoing(true)
+            .setTimeoutAfter(timeoutMs)
+        if (progressPercent != null) {
+            baseBuilder.setProgress(100, progressPercent.coerceIn(0, 100), false)
+        }
+        val notification = baseBuilder.build().apply {
+            flags = flags or Notification.FLAG_ONLY_ALERT_ONCE
+        }
+        manager.notify(RETURN_DAY_LIVE_ID, notification)
+    }
+
+    /** **指定日期**上 "HH:mm" 的绝对时间戳；格式非法返回 -1。不会把「明天」解析成「今天」。 */
+    private fun millisAtDate(date: java.time.LocalDate, time: String?): Long {
+        if (time.isNullOrBlank()) return -1L
+        val parts = time.split(":")
+        if (parts.size < 2) return -1L
+        val hour = parts[0].trim().toIntOrNull() ?: return -1L
+        val minute = parts[1].trim().toIntOrNull() ?: return -1L
+        if (hour !in 0..23 || minute !in 0..59) return -1L
+        return Calendar.getInstance().apply {
+            set(Calendar.YEAR, date.year)
+            set(Calendar.MONTH, date.monthValue - 1)
+            set(Calendar.DAY_OF_MONTH, date.dayOfMonth)
+            set(Calendar.HOUR_OF_DAY, hour)
+            set(Calendar.MINUTE, minute)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }.timeInMillis
+    }
+
+    /** java.time.LocalDate → kotlinx.datetime.LocalDate（resolveDaySchedule 只认后者）。 */
+    private fun kxDate(date: java.time.LocalDate): LocalDate =
+        LocalDate(date.year, date.monthValue, date.dayOfMonth)
 }
+

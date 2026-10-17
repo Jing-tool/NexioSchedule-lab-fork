@@ -53,6 +53,7 @@ import com.haooz.chedule.ui.theme.rememberCourseColors
 import com.haooz.chedule.ui.theme.readableCourseTextColor
 import com.haooz.chedule.data.hsvToRgb
 import com.haooz.chedule.data.rgbToHsv
+import com.haooz.chedule.ui.utils.glassPerfFactor
 import com.haooz.chedule.ui.utils.isAppDarkTheme
 import com.kyant.backdrop.Backdrop
 import com.kyant.backdrop.backdrops.SharedBlurBackdrop
@@ -272,11 +273,23 @@ fun CourseCard(
             val backdropEffects: com.kyant.backdrop.BackdropEffectScope.() -> Unit =
                 remember(isSharedBlur, blurPx, lensRadiusPx, lensStrengthPx, cardRefraction) {
                     {
-                        if (!isSharedBlur) {
-                            blur(blurPx)
-                        }
-                        if (cardRefraction != com.haooz.chedule.data.CardRefractionLevel.OFF) {
-                            lens(lensRadiusPx, lensStrengthPx)
+                        // 滑动/翻页进行中降级：blur + lens 是课表页最贵的两笔
+                        //（每帧 × 每张可见卡各一次 GPU 模糊 + 一次 AGSL 着色器）。
+                        // 只在**绘制期**读全局系数，绝不进 remember 的键：否则 lambda 身份每次
+                        // 翻面都变，drawBackdrop 会判不等并整块重建绘制缓存（v22 椭圆伪影同类）；
+                        // 系数归零时**一个 effect 都不追加** → RenderEffect 为空 → 走 canDirectBlit
+                        // 直采共享预模糊层，连每卡离屏录制一起省掉。
+                        val glassFactor = glassPerfFactor()
+                        if (glassFactor > 0.01f) {
+                            if (!isSharedBlur) {
+                                blur(blurPx * glassFactor)
+                            }
+                            if (cardRefraction != com.haooz.chedule.data.CardRefractionLevel.OFF) {
+                                // 折射：**宽度（refractionHeight）保持不变，只淡强度（refractionAmount）**。
+                                // 宽度一起乘会让高光环随系数向卡片边缘收拢/扫过（观感"蹭的一下冒出来"），
+                                // 而且库内 padding 按 padding - refractionHeight 每帧变，层几何跟着抖。
+                                lens(lensRadiusPx, lensStrengthPx * glassFactor)
+                            }
                         }
                     }
                 }

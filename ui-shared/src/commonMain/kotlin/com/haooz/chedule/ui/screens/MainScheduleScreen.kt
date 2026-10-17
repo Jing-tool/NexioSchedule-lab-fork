@@ -181,6 +181,13 @@ data class ScheduleGridGeometry(
      * 整体下推，现算公式漏掉这部分，长按浮层/吸附落点会整体偏上（偏移量 = 该节次上方特殊块总高）。
      */
     val sectionTopDp: Map<Int, Float> = emptyMap(),
+    /**
+     * 特殊块（自习 / 自定义时间块）在列内的 [顶部 y, 高度]（dp），取自 [computeSpecialGridLayout]。
+     *
+     * 落点反查用它拦掉「压在特殊块上」的非法落点：块本身不是节次，落进去没有意义。
+     * 与 [sectionTopDp] 一样属于本地定制（上游 A 版构造没带这两个字段，漏了照样能编译）。
+     */
+    val specialBandRangesDp: List<Pair<Float, Float>> = emptyList(),
 )
 
 @Composable
@@ -983,6 +990,8 @@ fun MainScheduleScreen(
                             blockedColumns = blocked,
                             // 节次顶的权威来源：含特殊块挤占，浮层/落点定位都依赖它
                             sectionTopDp = specialGrid.sectionTop,
+                            // 特殊块占位区间：落点反查要拦掉压在块上的位置
+                            specialBandRangesDp = specialGrid.specialBands.map { it.top to it.height },
                         )
                     }
                     val pushFreshGeometry by rememberUpdatedState {

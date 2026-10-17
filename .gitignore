@@ -40,6 +40,10 @@ server/
 __pycache__/
 *.pyc
 
+# --- 临时副本（解冲突时拷的旧文件参考副本，绝不入库） ---
+.tmp_*
+_old_*
+
 # --- 其他 ---
 /captures
 .externalNativeBuild

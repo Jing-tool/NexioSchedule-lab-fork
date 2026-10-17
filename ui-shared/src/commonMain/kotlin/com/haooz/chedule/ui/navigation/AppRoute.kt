@@ -90,6 +90,11 @@ sealed interface AppRoute {
         override val id: String get() = "course_reminder"
     }
 
+    /** 通知 / 超级岛 / 实时动态测试（「通知与超级岛测试」）。 */
+    data object ReminderTest : AppRoute {
+        override val id: String get() = "reminder_test"
+    }
+
     /** 节假日与调休（「节假日与调休」）。 */
     data object HolidaySettings : AppRoute {
         override val id: String get() = "holiday_settings"
@@ -143,6 +148,7 @@ sealed interface AppRoute {
             AiImport.id -> AiImport
             WidgetIntro.id -> WidgetIntro
             CourseReminder.id -> CourseReminder
+            ReminderTest.id -> ReminderTest
             HolidaySettings.id -> HolidaySettings
             WebDavSettings.id -> WebDavSettings
             CourseTimeSettings.id -> CourseTimeSettings

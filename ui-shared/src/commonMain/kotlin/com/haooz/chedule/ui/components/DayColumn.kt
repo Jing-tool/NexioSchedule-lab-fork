@@ -53,6 +53,7 @@ import com.haooz.chedule.data.CourseTimeSpan
 import kotlinx.coroutines.delay
 import com.haooz.chedule.data.HolidayCourseExclusion
 import com.kyant.backdrop.edgelight.edgeLight
+import com.haooz.chedule.ui.utils.glassPerfFactor
 import com.haooz.chedule.ui.utils.rememberCourseCardEdgeLight
 import com.kyant.backdrop.Backdrop
 import com.kyant.backdrop.backdrops.SharedBlurBackdrop
@@ -614,7 +615,11 @@ private fun PendingSectionBox(
                             viewport = com.kyant.backdrop.LocalBackdropViewport.current,
                             onDrawSurface = pendingOnSurface
                         )
-                        .edgeLight(shape = edgeLightShape, edgeLight = rememberCourseCardEdgeLight(baseColor = surfaceColor))
+                        .edgeLight(
+                            shape = edgeLightShape,
+                            edgeLight = rememberCourseCardEdgeLight(baseColor = surfaceColor),
+                            fadeAlpha = { glassPerfFactor() }
+                        )
                 ) {
                     Card(
                         modifier = Modifier.fillMaxSize(),
@@ -837,11 +842,17 @@ fun SpecialBandOverlay(
             val bandEffects: com.kyant.backdrop.BackdropEffectScope.() -> Unit =
                 remember(isSharedBlur, blurPx, lensRadiusPx, lensStrengthPx, cardRefraction) {
                     {
-                        if (!isSharedBlur) {
-                            blur(blurPx)
-                        }
-                        if (cardRefraction != com.haooz.chedule.data.CardRefractionLevel.OFF) {
-                            lens(lensRadiusPx, lensStrengthPx)
+                        // 特殊块卡片与 CourseCard 同口径：滑动/翻页中按全局系数淡出 blur + lens。
+                        // 绘制期读、不进 remember 的键；系数归零时不追加任何 effect（canDirectBlit 快路径）。
+                        val glassFactor = glassPerfFactor()
+                        if (glassFactor > 0.01f) {
+                            if (!isSharedBlur) {
+                                blur(blurPx * glassFactor)
+                            }
+                            if (cardRefraction != com.haooz.chedule.data.CardRefractionLevel.OFF) {
+                                // 折射宽度恒定、只淡强度（宽度乘系数会「扫过」+ 层几何每帧抖）
+                                lens(lensRadiusPx, lensStrengthPx * glassFactor)
+                            }
                         }
                     }
                 }
@@ -890,7 +901,11 @@ fun SpecialBandOverlay(
                             style = outlineStroke
                         )
                     }
-                    .edgeLight(shape = edgeLightShape, edgeLight = rememberCourseCardEdgeLight(baseColor = bgColor))
+                    .edgeLight(
+                        shape = edgeLightShape,
+                        edgeLight = rememberCourseCardEdgeLight(baseColor = bgColor),
+                        fadeAlpha = { glassPerfFactor() }
+                    )
             ) {
                 SpecialBandBody(
                     name = shownName,

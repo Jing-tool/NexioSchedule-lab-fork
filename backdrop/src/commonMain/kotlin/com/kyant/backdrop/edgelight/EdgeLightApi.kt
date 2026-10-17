@@ -19,7 +19,9 @@ data class EdgeLightConfig(
 @Stable
 fun Modifier.edgeLight(
     shape: Shape,
-    config: EdgeLightConfig = EdgeLightConfig()
+    config: EdgeLightConfig = EdgeLightConfig(),
+    /** 绘制期淡出系数；默认恒 1f（不淡出）。见 EdgeLightModifier.kt 的 EdgeLightElement。 */
+    fadeAlpha: () -> Float = FullFadeAlpha
 ): Modifier {
     return this.edgeLight(
         shape = shape,
@@ -28,7 +30,8 @@ fun Modifier.edgeLight(
             blurRadius = config.blurRadius,
             intensity = config.intensity,
             style = EdgeLightStyle.Uniform(color = config.color)
-        )
+        ),
+        fadeAlpha = fadeAlpha
     )
 }
 
@@ -38,7 +41,9 @@ fun Modifier.edgeLight(
     color: Color = Color.White.copy(alpha = 0.5f),
     width: Dp = 1.dp,
     blurRadius: Dp = 2.dp,
-    intensity: Float = 1f
+    intensity: Float = 1f,
+    /** 绘制期淡出系数；默认恒 1f（不淡出）。见 EdgeLightModifier.kt 的 EdgeLightElement。 */
+    fadeAlpha: () -> Float = FullFadeAlpha
 ): Modifier {
     return this.edgeLight(
         shape = shape,
@@ -47,7 +52,8 @@ fun Modifier.edgeLight(
             width = width,
             blurRadius = blurRadius,
             intensity = intensity
-        )
+        ),
+        fadeAlpha = fadeAlpha
     )
 }
 

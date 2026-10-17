@@ -22,6 +22,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -44,6 +45,13 @@ import com.haooz.chedule.data.showToast
 import com.haooz.chedule.data.todayLocalDate
 
 /**
+ * 本 fork 的发布页。直链解析不到时（Gitee 附件还没传完 / 被删）用它兜底 ——
+ * 应用内的更新源就是这个仓库（见 UpdateChecker 的 GITEE_RELEASES_API），
+ * 包用同一把 keystore 签名，从页面下载后能直接覆盖安装、不丢数据。
+ */
+private const val FORK_RELEASES_URL = "https://gitee.com/jing494/nexio-schedule_fork/releases"
+
+/**
  * 更新弹窗：每天启动时检查一次更新，有新版本则弹窗提示。
  * 点「更新」直接下载安装包（已下好则直接安装），不再跳转设置页再点一次。
  */
@@ -55,6 +63,8 @@ fun UpdateDialog(
 ) {
     val hapticFeedback = LocalHapticFeedback.current
     val coroutineScope = rememberCoroutineScope()
+    // 浏览器由平台提供（Android/iOS/桌面各一套），commonMain 不碰 Intent
+    val uriHandler = LocalUriHandler.current
 
     val updatePrefs = remember { AppStorage.store("update_settings") }
     var showUpdateDialog by remember { mutableStateOf(false) }
@@ -165,7 +175,12 @@ fun UpdateDialog(
             isResolvingUrl = false
             if (apkUrl.isNullOrBlank()) {
                 isDownloading = false
-                showToast("获取下载地址失败，请到「设置 - 应用更新」中重试", longDuration = true)
+                // 解析不到直链就退化为打开本 fork 的发布页：官方 release 页永远在，
+                // 比只丢一句「请重试」有用（真机踩过「两个源都报未找到下载链接」）
+                runCatching { uriHandler.openUri(FORK_RELEASES_URL) }.onFailure {
+                    showToast("打不开浏览器，请手动访问：$FORK_RELEASES_URL", longDuration = true)
+                }
+                showUpdateDialog = false
                 return@launch
             }
             try {

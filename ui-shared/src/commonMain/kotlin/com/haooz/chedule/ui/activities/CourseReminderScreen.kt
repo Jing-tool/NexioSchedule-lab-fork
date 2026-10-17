@@ -7,6 +7,7 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -42,6 +43,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.haooz.chedule.data.AppStorage
+import com.haooz.chedule.data.HolidayManager
 import com.haooz.chedule.data.NoopReminderController
 import com.haooz.chedule.data.ReminderController
 import com.haooz.chedule.data.showToast
@@ -91,6 +93,13 @@ private fun pad2(n: Int): String = n.toString().padStart(2, '0')
 /** `HH:mm` 两位补零（原 `%02d:%02d`） */
 private fun pad2(hour: Int, minute: Int): String = "${pad2(hour)}:${pad2(minute)}"
 
+/**
+ * 总开关联动关掉的子开关：记住「是我们关的」，总开关再打开时按原样恢复
+ * （否则用户会发现自己**从没动过**的「课中提醒 / 上课勿扰」被静默关掉）。
+ */
+private const val PENDING_RESTORE_DND = "pending_restore_class_dnd"
+private const val PENDING_RESTORE_IN_CLASS = "pending_restore_in_class"
+
 @Composable
 fun CourseReminderScreen(
     settingsViewModel: SettingsViewModel = settingsViewModel(),
@@ -138,10 +147,15 @@ fun CourseReminderScreen(
     var islandRightMode by remember { mutableIntStateOf(reminderPrefs.getInt("island_right_mode", 1)) }
     // 超级岛息屏显示：0=课程名称，1=上课地点
     var islandAodMode by remember { mutableIntStateOf(reminderPrefs.getInt("island_aod_mode", 0)) }
-    // 课中岛缩略态右侧：0=正在上课，1=距下课倒计时（仅超级岛生效）
+    // 课中岛缩略态右侧：0=正在上课，1=距下课倒计时（仅超级岛生效）。
+    // ⚠ 默认 -1 = **用户没设过**：课中与课前 B 区是同一块区域，没设过就跟随课前
     var islandInClassRightMode by remember {
-        mutableIntStateOf(reminderPrefs.getInt("island_in_class_right_mode", 0))
+        mutableIntStateOf(reminderPrefs.getInt("island_in_class_right_mode", -1))
     }
+    // 课中 B 区**实际生效**的模式：唯一判定在 ReminderController.effectiveInClassRightMode
+    //（设置页与岛侧共用这一份；过去两处各读各的，正是「课前在跳秒、上课后变静态」的根因）
+    val effectiveIslandInClassRightMode =
+        reminderController.effectiveInClassRightMode(islandRightMode, islandInClassRightMode)
     // 课中提醒：超级岛 / 原生实况共用同一开关
     var inClassEnabled by remember {
         mutableStateOf(reminderController.isInClassEnabled())
@@ -160,9 +174,26 @@ fun CourseReminderScreen(
     val masterEnabled = preClassReminder || nextDayReminder
     // 总开关关闭时联动关掉子开关：勿扰 + 课中提醒（与下节课/次日提醒置 false 同一策略）
     val disableMasterDependentSwitches = {
+        // 先记住「这次是被总开关联动关掉的」，总开关再打开时按原样恢复
+        if (classDndEnabled) reminderPrefs.edit { putBoolean(PENDING_RESTORE_DND, true) }
+        if (inClassEnabled) reminderPrefs.edit { putBoolean(PENDING_RESTORE_IN_CLASS, true) }
         settingsViewModel.setClassDndEnabled(false)
         inClassEnabled = false
         reminderPrefs.edit { putBoolean(ReminderController.KEY_IN_CLASS, false) }
+    }
+    val restoreMasterDependentSwitches = {
+        // 只恢复「确实是被联动关掉的」那些；用户自己关的不会被翻回来
+        if (reminderPrefs.getBoolean(PENDING_RESTORE_DND, false)) {
+            settingsViewModel.setClassDndEnabled(true)
+            reminderPrefs.edit { remove(PENDING_RESTORE_DND) }
+        }
+        if (reminderPrefs.getBoolean(PENDING_RESTORE_IN_CLASS, false)) {
+            inClassEnabled = true
+            reminderPrefs.edit {
+                putBoolean(ReminderController.KEY_IN_CLASS, true)
+                remove(PENDING_RESTORE_IN_CLASS)
+            }
+        }
     }
     var permissionRefreshKey by remember { mutableIntStateOf(0) }
     // 电池优化 / 自启动设置页返回：重读「已忽略电池优化」并触发权限刷新
@@ -254,6 +285,7 @@ fun CourseReminderScreen(
                     disableMasterDependentSwitches()
                 }
                 if (enable) {
+                    restoreMasterDependentSwitches()
                     reminderController.startReminderService()
                     rlog("reminder_service", "start_after_notif_grant")
                 } else {
@@ -336,6 +368,7 @@ fun CourseReminderScreen(
                                         disableMasterDependentSwitches()
                                     }
                                     if (it) {
+                                        restoreMasterDependentSwitches()
                                         reminderController.startReminderService()
                                         rlog("reminder_service", "start")
                                     } else {
@@ -346,6 +379,9 @@ fun CourseReminderScreen(
                             )
                         }
                     }
+
+                    // 提醒体检（默认只显示一行粗略状态、点开才展开；位置在总开关下方）
+                    item { ReminderHealthCard(reminderController) }
 
                     // 提醒详情
                     item {
@@ -775,7 +811,7 @@ fun CourseReminderScreen(
                         val islandInClassRightOptions = listOf(
                             DropdownItem(
                                 text = "正在上课",
-                                selected = islandInClassRightMode == 0,
+                                selected = effectiveIslandInClassRightMode == 0,
                                 onClick = {
                                     rlog("island_inclass_right_mode", "mode=0 正在上课")
                                     islandInClassRightMode = 0
@@ -784,7 +820,7 @@ fun CourseReminderScreen(
                             ),
                             DropdownItem(
                                 text = "倒计时",
-                                selected = islandInClassRightMode == 1,
+                                selected = effectiveIslandInClassRightMode == 1,
                                 onClick = {
                                     rlog("island_inclass_right_mode", "mode=1 倒计时")
                                     islandInClassRightMode = 1
@@ -1225,6 +1261,270 @@ fun CourseReminderScreen(
                         )
                     }
                 }
+            }
+        }
+    }
+}
+
+// ===================== 提醒体检 =====================
+
+/** 体检的一条结果。fix 非空时点一下跳到对应系统设置页（commonMain 不能起 Intent，交给平台控制器）。 */
+private data class ReminderHealthItem(
+    val title: String,
+    val ok: Boolean,
+    val detail: String,
+    /** 「去设置」的目标；null = 无需跳转 */
+    val fix: ReminderHealthFix?,
+    /** 纯说明项（不是「通过 / 不通过」）：浅色小字一行，且不计入「待处理」计数 */
+    val isInfo: Boolean = false,
+)
+
+/** 体检项的跳转目标 —— 平台控制器负责落成真实的系统设置页 */
+private enum class ReminderHealthFix { NOTIFICATIONS, BATTERY, EXACT_ALARM, APP_DETAILS }
+
+/**
+ * 逐项检查「提醒为什么可能发不出来」的系统侧开关。
+ *
+ * 全部只读、没有副作用；查不到（平台不支持）一律按「通过」处理，避免把不确定的事报成故障吓人。
+ * ⚠ 通道一项必须区分「还没建出来」与「被停用」：前者是全新安装的正常中间态
+ *（通道由 Application 启动时创建），把两者混在一起报，用户一进设置就是「N 个通道被停用」的假警报。
+ */
+private fun buildReminderHealth(controller: ReminderController): List<ReminderHealthItem> {
+    val out = mutableListOf<ReminderHealthItem>()
+
+    // ① 通知权限
+    val notifOk = controller.hasNotificationPermission()
+    out += ReminderHealthItem(
+        title = "通知权限",
+        ok = notifOk,
+        detail = if (notifOk) "已允许" else "被关闭了，所有提醒都发不出来",
+        fix = ReminderHealthFix.NOTIFICATIONS,
+    )
+
+    // ② 电池优化白名单（HyperOS 上最常见的「闹钟不响」原因）
+    val batteryOk = controller.isIgnoringBatteryOptimizations()
+    out += ReminderHealthItem(
+        title = "后台不受限",
+        ok = batteryOk,
+        detail = if (batteryOk) "已加入电池优化白名单" else "未加入白名单，锁屏久了提醒可能被系统压下",
+        fix = ReminderHealthFix.BATTERY,
+    )
+
+    // ③ 精确闹钟
+    val exactOk = controller.canScheduleExactAlarms()
+    out += ReminderHealthItem(
+        title = "精确闹钟",
+        ok = exactOk,
+        detail = if (exactOk) "可用，提醒能对准分钟" else "不可用，提醒会漂移甚至不发",
+        fix = ReminderHealthFix.EXACT_ALARM,
+    )
+
+    // ④ 后台运行限制。
+    // 说实话的一行：Android 没有查询「自启动」的公开接口（HyperOS 把它放在安全中心，
+    // 非 MIUI 根本没有这个概念），所以这里只读 AOSP 的后台限制标志，读不到就按「通过」处理 ——
+    // 不做「一定是没开自启动」这种看似确定、实则误导的判定。
+    val bgRestricted = controller.isBackgroundRestricted()
+    out += ReminderHealthItem(
+        title = "后台自启动",
+        ok = !bgRestricted,
+        detail = if (bgRestricted) {
+            "系统已限制后台运行，锁屏久了提醒可能被压住"
+        } else {
+            "系统未限制后台；厂商的自启动开关需在应用信息里手动确认"
+        },
+        fix = if (bgRestricted) ReminderHealthFix.APP_DETAILS else null,
+    )
+
+    // ⑤ 三个提醒通道的创建 / 停用
+    val channelStates = controller.notificationChannelStates()
+    // ★「通道不存在」≠「通道被停用」：null = 尚未创建（发出第一条提醒后会自动建好），不能报成故障
+    val missingCount = channelStates.count { it == null }
+    val blockedCount = channelStates.count { it != null && it.disabled }
+    out += ReminderHealthItem(
+        title = "提醒通道",
+        ok = blockedCount == 0,
+        detail = when {
+            blockedCount > 0 -> "有 $blockedCount 个通道被停用，对应提醒不会显示"
+            missingCount > 0 -> "尚未创建（发出第一条提醒后会自动建好）"
+            else -> "课前提醒 / 假期与返校 / 实时动态 都开着"
+        },
+        fix = ReminderHealthFix.NOTIFICATIONS,
+    )
+
+    // ⑥ 系统勿扰 / 静音。与本 App 自己的「上课勿扰」是两回事：这里查系统级。
+    // 实时动态通道申请了绕过勿扰，所以勿扰只会压住普通提醒 —— 文案按这个事实写，别吓人。
+    val systemDnd = controller.isSystemDndActive()
+    out += ReminderHealthItem(
+        title = "系统勿扰",
+        ok = !systemDnd,
+        detail = if (systemDnd) {
+            "系统当前处于勿扰/静音：普通提醒会被静音（实时动态通道已申请绕过勿扰）"
+        } else {
+            "未开启"
+        },
+        fix = null,
+    )
+
+    // ⑦ 假期首末课程排除（**说明项**，不是「通过/不通过」）：
+    // 被排除的节次在那些天**不展示也不提醒**（卡片 / 岛 / 提醒走同一套日解析）；
+    // 很多人会以为"提醒坏了"，这里明说一句并标出当前范围。
+    val beforeExclusion = HolidayManager.loadBeforeCourseExclusion()
+    val endExclusion = HolidayManager.loadEndCourseExclusion()
+    if (beforeExclusion.enabled || endExclusion.enabled) {
+        val parts = mutableListOf<String>()
+        if (beforeExclusion.enabled) {
+            parts += "前一天 ${beforeExclusion.startSection}~${beforeExclusion.endSection} 节"
+        }
+        if (endExclusion.enabled) {
+            parts += "最后一天 ${endExclusion.startSection}~${endExclusion.endSection} 节"
+        }
+        out += ReminderHealthItem(
+            title = "假期课程排除",
+            ok = true,
+            detail = "假期课程排除：" + parts.joinToString("、") + " 不展示也不提醒（正常）",
+            fix = null,
+            isInfo = true,
+        )
+    }
+
+    return out
+}
+
+/**
+ * 提醒体检：**默认只显示一行粗略状态**，点一下才展开成明细。
+ *
+ * 原来是四五项一直摊开，占掉小半屏；而绝大多数时候用户只需要知道「有没有问题」。
+ * 概览行本身可点（右侧给「展开 / 收起」字样，不是靠猜），展开时会重新检查一次，
+ * 免得展开看到的是进页面那一刻的旧状态。
+ */
+@Composable
+private fun ReminderHealthCard(controller: ReminderController) {
+    var tick by remember { mutableIntStateOf(0) }
+    var expanded by remember { mutableStateOf(false) }
+    val items = remember(tick, controller) { buildReminderHealth(controller) }
+    val badCount = items.count { !it.ok }
+    // commonMain 不能起 Intent：跳转一律走平台控制器（Noop 实现是空动作，桌面/iOS 点了没反应）
+    val openFix: (ReminderHealthFix) -> Unit = { fix ->
+        when (fix) {
+            ReminderHealthFix.NOTIFICATIONS -> controller.openPromotedNotificationSettings {}
+            ReminderHealthFix.BATTERY -> controller.openBatteryOptimizationSettings {}
+            ReminderHealthFix.EXACT_ALARM -> controller.openExactAlarmSettings {}
+            ReminderHealthFix.APP_DETAILS -> controller.openAppDetailsSettings {}
+        }
+    }
+
+    Card(
+        cornerRadius = 20.dp,
+        modifier = Modifier.fillMaxWidth(),
+        insideMargin = PaddingValues(0.dp),
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                        // 展开时重查一次，保证看到的是当前状态
+                        if (!expanded) tick++
+                        expanded = !expanded
+                    }
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "提醒体检",
+                    style = MiuixTheme.textStyles.body1.copy(fontWeight = FontWeight.Medium),
+                    color = MiuixTheme.colorScheme.onSurface,
+                )
+                Spacer(modifier = Modifier.weight(1f))
+                Text(
+                    text = if (badCount == 0) "全部通过" else "$badCount 项待处理",
+                    style = MiuixTheme.textStyles.body1.copy(fontSize = 12.sp),
+                    color = if (badCount == 0) {
+                        MiuixTheme.colorScheme.onSurfaceVariantSummary
+                    } else {
+                        ComposeColor(0xFFE07A2B)
+                    },
+                )
+                Text(
+                    text = if (expanded) "收起" else "展开",
+                    style = MiuixTheme.textStyles.body1.copy(fontSize = 12.sp),
+                    color = MiuixTheme.colorScheme.primary,
+                    modifier = Modifier.padding(start = 10.dp),
+                )
+            }
+            AnimatedVisibility(visible = expanded) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    items.forEach { item ->
+                        if (item.isInfo) {
+                            // 说明项：浅色小字一行 —— 不占「通过/不通过」的图标位，免得跟上面的节奏打架
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    text = item.detail,
+                                    style = MiuixTheme.textStyles.body1.copy(fontSize = 12.sp),
+                                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                )
+                            }
+                        } else {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable(enabled = !item.ok && item.fix != null) {
+                                        item.fix?.let(openFix)
+                                    }
+                                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    text = if (item.ok) "✓" else "✕",
+                                    style = MiuixTheme.textStyles.body1.copy(fontWeight = FontWeight.Medium),
+                                    color = if (item.ok) {
+                                        ComposeColor(0xFF3BA55D)
+                                    } else {
+                                        ComposeColor(0xFFD7263D)
+                                    },
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = item.title,
+                                        style = MiuixTheme.textStyles.body1,
+                                        color = MiuixTheme.colorScheme.onSurface,
+                                    )
+                                    Text(
+                                        text = item.detail,
+                                        style = MiuixTheme.textStyles.body1.copy(fontSize = 12.sp),
+                                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                    )
+                                }
+                                if (!item.ok && item.fix != null) {
+                                    Text(
+                                        text = "去设置",
+                                        style = MiuixTheme.textStyles.body1.copy(fontSize = 13.sp),
+                                        color = MiuixTheme.colorScheme.primary,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    TextButton(
+                        "重新检查",
+                        { tick++ },
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+                    )
+                }
+            }
+            if (!expanded && badCount > 0) {
+                Text(
+                    text = "点这一行展开，能看到是哪几项、并直接跳去设置",
+                    style = MiuixTheme.textStyles.body1.copy(fontSize = 12.sp),
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
+                )
             }
         }
     }

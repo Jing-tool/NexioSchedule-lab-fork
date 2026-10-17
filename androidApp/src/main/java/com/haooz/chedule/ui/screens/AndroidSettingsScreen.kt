@@ -78,6 +78,9 @@ fun AndroidSettingsScreen(
     val coroutineScope = rememberCoroutineScope()
     // 提醒页「测试通知」按钮文案需要超级岛开关（原共享页内联逻辑随迁回宿主）
     val islandNotification by settingsViewModel.islandNotification.collectAsState()
+    // Android 提醒能力（闹钟/电池/权限/系统设置页跳转）单一实例：共享设置页用它决定
+    // 「通知与超级岛测试」入口渲不渲染，平板两栏的提醒面板也复用同一个
+    val reminderController = remember { AndroidReminderController(context) }
 
     SettingsScreen(
         viewModel = viewModel,
@@ -92,6 +95,7 @@ fun AndroidSettingsScreen(
         onScrollYChanged = onScrollYChanged,
         settingsScrollBehavior = settingsScrollBehavior,
         liquidGlassBackdrop = liquidGlassBackdrop,
+        reminderController = reminderController,
         androidPane = { dest ->
             when (dest) {
                 TabletSettingsDest.Reminder -> CourseReminderScreen(
@@ -99,7 +103,7 @@ fun AndroidSettingsScreen(
                     scrollBehavior = null,
                     liquidGlassBackdrop = liquidGlassBackdrop,
                     // Android 提醒能力（闹钟/电池/权限/设置页跳转）注入
-                    reminderController = remember { AndroidReminderController(context) },
+                    reminderController = reminderController,
                 )
 
                 TabletSettingsDest.ScheduleImport -> BackupAndMigrationScreen(

@@ -2,7 +2,9 @@ package com.haooz.chedule.ui.utils
 
 import android.Manifest
 import android.app.Activity
+import android.app.ActivityManager
 import android.app.AlarmManager
+import android.app.NotificationManager
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
@@ -14,6 +16,7 @@ import android.provider.Settings
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.ActivityResultRegistryOwner
 import androidx.activity.result.contract.ActivityResultContracts
+import com.haooz.chedule.data.ReminderChannelState
 import com.haooz.chedule.data.ReminderController
 import com.haooz.chedule.reminder.ClassDndHelper
 import com.haooz.chedule.reminder.CourseReminderHelper
@@ -124,6 +127,49 @@ class AndroidReminderController(private val context: Context) : ReminderControll
     override val supportsPromotedNotifications: Boolean
         get() = Build.VERSION.SDK_INT >= 36
 
+    /** 测试页绑的就是 Android 的通知通道 / 超级岛 / 实时动态：只有本端有可测场景 */
+    override val supportsReminderTestPage: Boolean get() = true
+
+    // ————————————————————————— 提醒体检（只读） —————————————————————————
+
+    /**
+     * 提醒通道的创建 / 停用状态。`getNotificationChannel` 返回 null 说明这条通道还没建出来 ——
+     * 体检卡必须把「未创建」与「被用户停用」分开报（旧版把前者误报成后者，全新安装即假警报）。
+     */
+    override fun notificationChannelStates(): List<ReminderChannelState?> {
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            ?: return emptyList()
+        return REMINDER_CHANNEL_IDS.map { id ->
+            runCatching { manager.getNotificationChannel(id) }.getOrNull()?.let { channel ->
+                ReminderChannelState(
+                    id = channel.id,
+                    disabled = channel.importance == NotificationManager.IMPORTANCE_NONE,
+                )
+            }
+        }
+    }
+
+    /**
+     * 系统级勿扰 / 静音。与本 App 的「上课勿扰」是两回事：
+     * 实时动态通道申请了绕过勿扰（`setBypassDnd`），所以它只压住普通提醒。
+     */
+    override fun isSystemDndActive(): Boolean {
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            ?: return false
+        return runCatching {
+            manager.currentInterruptionFilter != NotificationManager.INTERRUPTION_FILTER_ALL
+        }.getOrDefault(false)
+    }
+
+    /** 系统是否限制了后台运行（AOSP 标志；厂商的「自启动」没有公开查询接口，体检里照实说） */
+    override fun isBackgroundRestricted(): Boolean {
+        // isBackgroundRestricted 是 API 28+（minSdk 26）：低版本没有这个概念，按「未限制」处理
+        if (Build.VERSION.SDK_INT < 28) return false
+        val manager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+            ?: return false
+        return runCatching { manager.isBackgroundRestricted() }.getOrDefault(false)
+    }
+
     // ————————————————————————— 权限 / 系统设置页 —————————————————————————
 
     override fun requestNotificationPermission(onResult: (granted: Boolean) -> Unit) {
@@ -218,6 +264,13 @@ class AndroidReminderController(private val context: Context) : ReminderControll
          */
         const val KEY_SETTINGS_RESULT = "com.haooz.chedule.reminder.settings_result"
         const val KEY_NOTIFICATION_PERMISSION = "com.haooz.chedule.reminder.notification_permission"
+
+        /** 体检要看的通道：与提醒层实际建的三个通道同一批 id（顺序即展示顺序） */
+        val REMINDER_CHANNEL_IDS = listOf(
+            CourseReminderHelper.CHANNEL_REMINDER_ID,
+            CourseReminderHelper.CHANNEL_HOLIDAY_ID,
+            CourseReminderHelper.CHANNEL_LIVE_ID,
+        )
     }
 }
 

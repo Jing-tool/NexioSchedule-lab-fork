@@ -55,6 +55,7 @@ import com.haooz.chedule.data.CourseRepository
 import com.haooz.chedule.data.TimeConfig
 import com.haooz.chedule.reminder.CourseReminderHelper
 import com.haooz.chedule.reminder.IslandNotificationHelper
+import com.haooz.chedule.reminder.ReminderTestScenario
 import com.haooz.chedule.ui.activities.AboutScreen
 import com.haooz.chedule.ui.activities.BackupAndMigrationScreen
 import com.haooz.chedule.ui.activities.CourseManageScreen
@@ -225,6 +226,17 @@ fun AppRouteContent(
                 },
             )
         }
+        // 通知 / 超级岛 / 实时动态测试：场景表与发送都在 :androidApp（共享页只展示与派发）
+        AppRoute.ReminderTest -> {
+            val context = LocalContext.current
+            ReminderTestRoute(
+                router = router,
+                channelLabel = remember { ReminderTestScenario.channelLabel(context) },
+                groups = remember { ReminderTestScenario.groups() },
+                onRefreshChannel = { ReminderTestScenario.channelLabel(context) },
+                onSend = { entry -> ReminderTestScenario.send(context, entry.id) },
+            )
+        }
         AppRoute.WebDavSettings -> {
             val context = LocalContext.current
             WebDavSettingsRoute(
@@ -238,6 +250,13 @@ fun AppRouteContent(
             HolidaySettingsRoute(
                 router = router,
                 onHolidayDataChanged = { CourseReminderHelper.onHolidayDataChanged(context) },
+                // 「立即发一条测试」与正式提醒共用同一支函数（③），不写「当天只发一次」去重键
+                onSendReturnDayBalanceTest = {
+                    CourseReminderHelper.sendReturnDayReminderNow(context, prep = false)
+                },
+                onSendReturnDayPrepTest = {
+                    CourseReminderHelper.sendReturnDayReminderNow(context, prep = true)
+                },
             )
         }
         // Android 只注入自由小窗判定

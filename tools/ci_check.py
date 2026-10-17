@@ -47,7 +47,6 @@ F_UPDCHECK = f"{J_APP}/ui/utils/UpdateChecker.kt"
 F_UPDINST = f"{J_APP}/ui/utils/UpdateInstaller.kt"
 WF_REL = ".github/workflows/sync-upstream-build-release.yml"
 F_UPDSET = f"{J_SHARED}/ui/activities/UpdateSettingsScreen.kt"
-F_MANIFEST = "androidApp/src/main/AndroidManifest.xml"
 
 _cache = {}
 
@@ -177,16 +176,27 @@ CHECKS = [
         [r"daysLeft > 0 && !isReturnDay"],
     ),
     (
-        "测试入口唯一（设置→特色功能）+ 场景表在 ReminderTestScenario",
+        # 新架构是「单 Activity + 路由」：测试页也走路由（`AppRoute.ReminderTest`），
+        # 不再有 ReminderTestActivity。入口仍然只此一个（设置 → 特色功能）。
+        "测试入口唯一（设置→特色功能），且走路由而不是新增 Activity",
         F_SETTINGS,
-        [r"ReminderTestActivity::class\.java"],
-        [],
+        [r"AppRoute\.ReminderTest"],
+        [r"ReminderTestActivity"],
     ),
     (
-        "测试页要在 Manifest 注册",
-        F_MANIFEST,
+        # 原第 17 条是「测试页要在 Manifest 注册」（= 页面必须真的挂到宿主上）。
+        # 路由形态下等价于「必须注册进 route→内容映射表」，否则点了没反应/穷尽 when 编译不过；
+        # 另两条原意也钉在这里：页面只从场景表取数据与派发（不许另写一套文案/发送逻辑）、
+        # 不许把 Activity 形态复活。
+        "测试页必须注册进导航表（route→内容映射）+ 页面只从场景表取数据/派发",
+        None,  # 全树：注册点在 AppRouteContent（Android）/ IosAppEntry（iOS）
+        [
+            r"AppRoute\.ReminderTest ->",
+            r"ReminderTestRoute\(",
+            r"ReminderTestScenario\.groups\(",
+            r"ReminderTestScenario\.send\(",
+        ],
         [r"ReminderTestActivity"],
-        [],
     ),
     (
         "场景表不许自己持久化（写「当天只发一次」去重键会顶掉正式提醒）",

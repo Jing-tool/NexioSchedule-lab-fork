@@ -41,6 +41,8 @@ import com.haooz.chedule.data.coursePeriodOngoing
 import com.haooz.chedule.data.millisBetween
 import com.haooz.chedule.data.nowLocalTime
 import com.haooz.chedule.data.parseHourMinute
+import com.haooz.chedule.ui.utils.millisToNextCountdownTick
+import com.haooz.chedule.ui.utils.millisToNextMinute
 import com.haooz.chedule.uishared.resources.Res
 import com.haooz.chedule.uishared.resources.ic_widget_location
 import com.haooz.chedule.uishared.resources.icon_cloudy
@@ -155,7 +157,18 @@ private fun rememberCourseStatus(
             val newStatus = CourseStatus(current?.course, next?.course, message, current?.end)
             // 文案未变化时不写状态，避免每秒重组
             if (newStatus != status) status = newStatus
-            delay(1000L.milliseconds)
+            // 唤醒点**从当前剩余秒数推**（floor 口径），不是「睡到下一个整分」：
+            // 倒计时在最后一分钟切成秒级，睡到整分会让那 60 秒的秒数冻住。
+            // 这条与 generateSmartTip 的 ceil 整分节拍**不能统一**（两者口径不同，见 MinuteTick.kt）。
+            val tickMs = when {
+                current != null ->
+                    millisToNextCountdownTick(millisBetween(now, current.end, allowRollover = true))
+                next != null ->
+                    millisToNextCountdownTick(millisBetween(now, next.start, allowRollover = true))
+                // 今天已无课：文案不会再变，睡到下一个整分只为跨过日期边界
+                else -> millisToNextMinute(now)
+            }
+            delay(tickMs.milliseconds)
         }
     }
     return status
@@ -520,9 +533,11 @@ fun TodayAssistantCard(
             val newTip = generateSmartTip(
                 courses, tomorrowCourses, sectionTimes, morningSections, afternoonSections
             ).orEmpty()
-            // 与顶部倒计时同频轮询；文案未变化时不写状态，避免每秒重组
+            // 文案未变化时不写状态，避免每秒重组
             if (newTip != smartTip) smartTip = newTip
-            delay(1_000L.milliseconds)
+            // generateSmartTip 是最贵的一处：内部两遍 buildCourseTimeRanges + 解析 + 排序。
+            // 而它的输出粒度是分钟（ceil），所以从「每秒重算」改成「睡到下一个整分」。
+            delay(millisToNextMinute().milliseconds)
         }
     }
 

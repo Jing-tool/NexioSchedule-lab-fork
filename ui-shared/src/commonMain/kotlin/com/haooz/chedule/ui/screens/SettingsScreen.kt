@@ -56,6 +56,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.haooz.chedule.data.Course
 import com.haooz.chedule.data.CourseRepository
+import com.haooz.chedule.data.NoopReminderController
+import com.haooz.chedule.data.ReminderController
 import com.haooz.chedule.data.TeachingWeekReorganization
 import com.haooz.chedule.data.TimeConfig
 import com.haooz.chedule.ui.navigation.AppRoute
@@ -144,6 +146,11 @@ fun SettingsScreen(
     onSendTestNotification: () -> Unit = {},
     /** 是否超级岛设备（决定「测试通知」按钮文案） */
     isIslandSupported: () -> Boolean = { false },
+    /**
+     * 提醒平台能力（Android 注入 AndroidReminderController；桌面/iOS 用 Noop）。
+     * 只用来决定「通知与超级岛测试」入口渲不渲染 —— 没有可测场景的平台整个不渲染。
+     */
+    reminderController: ReminderController = NoopReminderController,
     /** 小部件页「刷新已装小部件」（Android = WidgetUpdateCache） */
     onRefreshWidgets: () -> Unit = {},
     /** 节假日数据变更副作用（重排提醒 + 刷小部件） */
@@ -387,6 +394,16 @@ fun SettingsScreen(
                                         settingsRouter.navigate(AppRoute.CourseReminder)
                                     }
                                 )
+                                // 测试入口只此一个（原在提醒设置页里，已独立成页）：
+                                // 场景表在 androidApp 的 ReminderTestScenario，本页只挂路由。
+                                // 没有可测场景的平台（桌面/iOS）**整个不渲染**，别让用户点进空页面。
+                                if (reminderController.supportsReminderTestPage) {
+                                    ArrowPreference(
+                                        title = "通知与超级岛测试",
+                                        summary = "课前/课中/返校岛与实时动态，逐个试",
+                                        onClick = { settingsRouter.navigate(AppRoute.ReminderTest) }
+                                    )
+                                }
                                 ArrowPreference(
                                     title = "节假日与调休",
                                     onClick = {

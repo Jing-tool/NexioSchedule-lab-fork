@@ -26,18 +26,36 @@ import com.kyant.backdrop.internal.setRuntimeShader
 import com.kyant.backdrop.isRuntimeShaderSupported
 import kotlin.math.ceil
 
+/**
+ * 默认的「不淡出」系数。
+ *
+ * 必须是**同一个实例**：`fadeAlpha` 参与 [EdgeLightElement.equals]，若默认值写成
+ * `{ 1f }` 字面量，每次重组都会新建 lambda，equals 恒不等 → update()/invalidateOutlineCache()
+ * 白白每帧跑一遍。不传 fadeAlpha 的调用点（导航栏按钮 / 下拉菜单等）共用这一个。
+ */
+internal val FullFadeAlpha: () -> Float = { 1f }
+
 internal class EdgeLightElement(
     val shape: androidx.compose.ui.graphics.Shape,
-    val edgeLight: () -> EdgeLight?
+    val edgeLight: () -> EdgeLight?,
+    /**
+     * 绘制期读取的淡出系数（1f = 全量，0f = 完全隐藏）。
+     *
+     * 由上层（:ui-shared 的 GlassPerf）在调用点以参数注入 —— :ui-shared → :backdrop 是
+     * 单向依赖，backdrop 不能反向认识 GlassPerf。**只能在 draw 里调用**：读进组合就是
+     * 每帧重组，读进 remember 的键会让 element 身份每次都变。
+     */
+    val fadeAlpha: () -> Float
 ) : ModifierNodeElement<EdgeLightNode>() {
 
     override fun create(): EdgeLightNode {
-        return EdgeLightNode(shape, edgeLight)
+        return EdgeLightNode(shape, edgeLight, fadeAlpha)
     }
 
     override fun update(node: EdgeLightNode) {
         node.shape = shape
         node.edgeLight = edgeLight
+        node.fadeAlpha = fadeAlpha
         node.invalidateOutlineCache()
         node.invalidateDraw()
     }
@@ -53,19 +71,22 @@ internal class EdgeLightElement(
         if (other !is EdgeLightElement) return false
         if (shape != other.shape) return false
         if (edgeLight != other.edgeLight) return false
+        if (fadeAlpha != other.fadeAlpha) return false
         return true
     }
 
     override fun hashCode(): Int {
         var result = shape.hashCode()
         result = 31 * result + edgeLight.hashCode()
+        result = 31 * result + fadeAlpha.hashCode()
         return result
     }
 }
 
 internal class EdgeLightNode(
     var shape: androidx.compose.ui.graphics.Shape,
-    var edgeLight: () -> EdgeLight?
+    var edgeLight: () -> EdgeLight?,
+    var fadeAlpha: () -> Float
 ) : DrawModifierNode, Modifier.Node() {
 
     override val shouldAutoInvalidate: Boolean = false
@@ -120,7 +141,7 @@ internal class EdgeLightNode(
         // 它是"每张卡每帧一次的前景 RuntimeShader + 一次 native SkMaskFilter"，
         // 与 blur/lens 同属每帧每卡的开销。读的是同一个全局系数 ——
         // DrawModifierNode.draw 里的快照读会登记成绘制期依赖，变化只失效绘制、不触发重组。
-        val edgeLightFade = com.haooz.chedule.ui.utils.glassPerfFactor()
+        val edgeLightFade = fadeAlpha()
         if (edgeLightFade <= 0.01f) return
 
         val edgeLightLayer = edgeLightLayer
@@ -264,24 +285,28 @@ internal class EdgeLightNode(
 
 fun Modifier.edgeLight(
     shape: androidx.compose.ui.graphics.Shape,
-    edgeLight: EdgeLight = EdgeLight.Default
+    edgeLight: EdgeLight = EdgeLight.Default,
+    fadeAlpha: () -> Float = FullFadeAlpha
 ): Modifier {
     return this.then(
         EdgeLightElement(
             shape = shape,
-            edgeLight = { edgeLight }
+            edgeLight = { edgeLight },
+            fadeAlpha = fadeAlpha
         )
     )
 }
 
 fun Modifier.edgeLight(
     shape: androidx.compose.ui.graphics.Shape,
-    edgeLight: () -> EdgeLight? = { EdgeLight.Default }
+    edgeLight: () -> EdgeLight? = { EdgeLight.Default },
+    fadeAlpha: () -> Float = FullFadeAlpha
 ): Modifier {
     return this.then(
         EdgeLightElement(
             shape = shape,
-            edgeLight = edgeLight
+            edgeLight = edgeLight,
+            fadeAlpha = fadeAlpha
         )
     )
 }
@@ -289,7 +314,8 @@ fun Modifier.edgeLight(
 fun Modifier.edgeLightIf(
     shape: androidx.compose.ui.graphics.Shape,
     condition: Boolean,
-    edgeLight: EdgeLight = EdgeLight.Default
+    edgeLight: EdgeLight = EdgeLight.Default,
+    fadeAlpha: () -> Float = FullFadeAlpha
 ): Modifier {
     return this.then(
         EdgeLightElement(
@@ -298,7 +324,8 @@ fun Modifier.edgeLightIf(
                 { edgeLight }
             } else {
                 { null }
-            }
+            },
+            fadeAlpha = fadeAlpha
         )
     )
 }

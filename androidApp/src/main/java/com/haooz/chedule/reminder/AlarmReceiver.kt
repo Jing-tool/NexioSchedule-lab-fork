@@ -14,6 +14,7 @@ import com.haooz.chedule.data.NexioLog
 import com.haooz.chedule.data.CourseRepository
 import com.haooz.chedule.data.HolidayCountdown
 import com.haooz.chedule.data.HolidayManager
+import com.haooz.chedule.data.ReturnDayReminder
 import kotlinx.datetime.LocalDate
 
 class AlarmReceiver : BroadcastReceiver() {
@@ -35,17 +36,6 @@ class AlarmReceiver : BroadcastReceiver() {
         val resume = block.endDate.plusDays(1)
         val days = startDate.daysUntil(block.endDate) + 1L
         return "共${days}天，${resume.monthNumber}月${resume.dayOfMonth}日恢复上课"
-    }
-
-    /** 把 1..23 的整数转成中文数字（如 8 -> "八"，23 -> "二十三"），用于"早八"式文案 */
-    private fun chineseNumberHour(n: Int): String {
-        if (n <= 0 || n > 23) return n.toString()
-        val digit = listOf("", "一", "二", "三", "四", "五", "六", "七", "八", "九")
-        return when {
-            n < 10 -> digit[n]
-            n < 20 -> "十" + digit[n - 10]
-            else -> digit[n / 10] + "十" + digit[n % 10]
-        }
     }
 
     override fun onReceive(context: Context, intent: Intent) {
@@ -106,7 +96,8 @@ class AlarmReceiver : BroadcastReceiver() {
                 val freshStartTime = CourseReminderHelper.getCourseStartTime(matched, repository) ?: startTime
                 val freshEndTime = CourseReminderHelper.getCourseEndTime(matched, repository) ?: ""
                 val startMillis = CourseReminderHelper.parseTimeToTodayMillis(freshStartTime)
-                val endMillis = CourseReminderHelper.courseEndMillis(freshStartTime, freshEndTime)
+                // 跨零点的课（23:30–00:30 晚自习）要按次日算结束，否则课中卡/岛永远不出现
+                val endMillis = CourseReminderHelper.endMillisFor(startMillis, freshEndTime)
 
                 if (startMillis <= 0L) {
                     NexioLog.d("AlarmReceiver", "Invalid start time for ${matched.name}, skipped")
@@ -132,6 +123,13 @@ class AlarmReceiver : BroadcastReceiver() {
                 CourseReminderHelper.recordPreClassSent(context, dedupId)
 
                 // 其余今日课程闹钟已在调度时注册，无需全量重装
+                CourseReminderHelper.onAlarmProcessed(context)
+            }
+
+            CourseReminderHelper.TYPE_RETURN_DAILY_BALANCE,
+            CourseReminderHelper.TYPE_RETURN_DAILY_PREP -> {
+                // 精确闹钟到点：直接走同一套判定（内部有"当天只发一次"去重），并顺手排下一天
+                CourseReminderHelper.checkDailyReturnDayNotifications(context)
                 CourseReminderHelper.onAlarmProcessed(context)
             }
 
@@ -176,20 +174,47 @@ class AlarmReceiver : BroadcastReceiver() {
                     return
                 }
 
-                if (tomorrowCourses.isEmpty()) {
-                    CourseReminderHelper.showReminderNotification(context, type, "明日无课", "明天没有课程安排")
-                } else {
-                    val title = "明天共${tomorrowCourses.size}节课"
-                    val firstCourse = tomorrowCourses.first()
-                    val firstStart = CourseReminderHelper.getCourseStartTime(firstCourse, repository)
-                    val firstHour = firstStart?.split(":")?.firstOrNull()?.toIntOrNull() ?: 9
-                    val details = when {
-                        firstHour < 9 -> "明早有早${chineseNumberHour(firstHour)}，${firstCourse.name}"
-                        firstHour < 12 -> "明早有课，${firstCourse.name} $firstStart"
-                        firstHour < 18 -> "下午有课，${firstCourse.name} $firstStart"
-                        else -> "晚上有课，${firstCourse.name} $firstStart"
+                // 文案与测试页共用一份（CourseReminderHelper.nextDayReminderText），别在这里再写一套
+                val (nextDayTitle, nextDayBody) =
+                    CourseReminderHelper.nextDayReminderText(tomorrowCourses, repository)
+                CourseReminderHelper.showReminderNotification(context, type, nextDayTitle, nextDayBody)
+
+                // 明天是「返校日」（休息日且次日要上课）→ 顺带推一条超级岛 / 原生实时动态。
+                // 两个通道功能必须同步：岛开走岛、岛关走原生。
+                // 用带 repository 的重载：它会一并检查「节假日末期课程排除」总开关，
+                // 否则用户关掉功能后仍会收到「明天返校」。
+                val tomorrowDate = java.time.LocalDate.now().plusDays(1)
+                if (ReturnDayReminder.isReturnDay(context, repository, tomorrowDate)) {
+                    val span = ReturnDayReminder.currentHolidaySpan(context, tomorrowDate)
+                    val firstReturnCourse = tomorrowCourses.firstOrNull()
+                    val returnName = firstReturnCourse?.name.orEmpty()
+                    val returnSection = firstReturnCourse?.getTimeDisplayText().orEmpty()
+                    val returnStart = firstReturnCourse?.let {
+                        CourseReminderHelper.getCourseStartTime(it, repository)
+                    }.orEmpty()
+                    val returnLabel = span?.name?.takeIf { it.isNotBlank() }?.let { it + "最后一天" }
+                    if (useIsland) {
+                        IslandNotificationHelper.sendReturnDayIslandNotification(
+                            context = context,
+                            courseName = returnName,
+                            section = returnSection,
+                            startTime = returnStart,
+                            // 次日提醒这条路，正文列的就是明天的课 → 日子词自然是「明天返校」
+                            targetDate = tomorrowDate,
+                            holidayLabel = returnLabel,
+                            progressPercent = span?.progressPercent,
+                        )
+                    } else {
+                        CourseReminderHelper.showReturnDayLiveNotification(
+                            context = context,
+                            courseName = returnName,
+                            section = returnSection,
+                            startTime = returnStart,
+                            targetDate = tomorrowDate,
+                            holidayLabel = returnLabel,
+                            progressPercent = span?.progressPercent,
+                        )
                     }
-                    CourseReminderHelper.showReminderNotification(context, type, title, details)
                 }
 
                 // 只补注册下一个次日闹钟，避免 cancel+重建全部课程闹钟

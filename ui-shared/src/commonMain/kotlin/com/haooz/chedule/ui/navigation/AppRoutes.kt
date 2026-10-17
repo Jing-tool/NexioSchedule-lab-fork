@@ -100,6 +100,9 @@ import com.haooz.chedule.ui.components.DocumentPageScaffold
 import com.haooz.chedule.ui.effects.motion.OobeCubicOutEasing
 import com.haooz.chedule.ui.effects.motion.OobeQuartOutEasing
 import com.haooz.chedule.ui.screens.CourseEditScreen
+import com.haooz.chedule.ui.screens.ReminderTestEntry
+import com.haooz.chedule.ui.screens.ReminderTestGroup
+import com.haooz.chedule.ui.screens.ReminderTestScreen
 import com.haooz.chedule.ui.screens.TimeConfigEditScreen
 import com.haooz.chedule.ui.utils.LocalNativeDocumentChrome
 import com.haooz.chedule.ui.utils.NativeDocumentOverlayEffect
@@ -367,11 +370,15 @@ fun AiImportRoute(
  * 桌面是 OkHttp），协程调度用 [ioDispatcher]。
  *
  * @param onHolidayDataChanged 节假日数据变更后的平台副作用（重排提醒/刷小部件），Android 宿主注入。
+ * @param onSendReturnDayBalanceTest / @param onSendReturnDayPrepTest 「立即发一条测试」：
+ *   传 null = 这一端没有通知能力 → 设置卡不渲染按钮（别给点了没反应的按钮）。
  */
 @Composable
 fun HolidaySettingsRoute(
     router: AppRouter,
     onHolidayDataChanged: () -> Unit = {},
+    onSendReturnDayBalanceTest: (() -> Unit)? = null,
+    onSendReturnDayPrepTest: (() -> Unit)? = null,
 ) {
     val http = remember { createHttpService(HttpTimeouts(connectSeconds = 10, readSeconds = 10)) }
     val scope = rememberCoroutineScope()
@@ -452,6 +459,8 @@ fun HolidaySettingsRoute(
             },
             reload = { reload() },
             onHolidayDataChanged = onHolidayDataChanged,
+            onSendReturnDayBalanceTest = onSendReturnDayBalanceTest,
+            onSendReturnDayPrepTest = onSendReturnDayPrepTest,
         )
     }
 }
@@ -583,6 +592,41 @@ fun CourseReminderRoute(
             scrollBehavior = scrollBehavior,
             liquidGlassBackdrop = backdrop,
             reminderController = reminderController,
+        )
+    }
+}
+
+/**
+ * 通知 / 超级岛 / 实时动态测试页路由。
+ *
+ * 场景表与发送都在宿主（`:androidApp` 的 `ReminderTestScenario`）——只有那里能直接调发送函数；
+ * 本壳只做「列表 + 展示 + 把点击交回去」，场景文案与发送逻辑不复刻到共享层
+ * （本项目已经两次踩到「两处各写一套」）。
+ *
+ * iOS/桌面没有 Android 的通知通道，不注入 groups 时页面显示空状态而不是白屏。
+ *
+ * @param channelLabel 当前实际生效的通道（宿主按主路径同一套判定传入）
+ * @param groups 场景分组（宿主提供）
+ * @param onSend 点一条场景：按 [ReminderTestEntry.id] 调主路径发送函数
+ */
+@Composable
+fun ReminderTestRoute(
+    router: AppRouter,
+    channelLabel: String = "",
+    groups: List<ReminderTestGroup> = emptyList(),
+    onRefreshChannel: () -> String = { channelLabel },
+    onSend: (ReminderTestEntry) -> Unit = {},
+) {
+    DocumentPageScaffold(
+        title = "通知与超级岛测试",
+        onBack = { router.popBack() },
+    ) { scrollBehavior, _ ->
+        ReminderTestScreen(
+            channelLabel = channelLabel,
+            groups = groups,
+            onRefreshChannel = onRefreshChannel,
+            onSend = onSend,
+            scrollBehavior = scrollBehavior,
         )
     }
 }

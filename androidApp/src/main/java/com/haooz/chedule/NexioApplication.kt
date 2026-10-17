@@ -73,6 +73,8 @@ class NexioApplication : Application() {
         // 应用材质档位：按钮/低栏等 chrome 折射随档降级
         com.haooz.chedule.ui.utils.AppMaterialSettings.load()
         com.haooz.chedule.ui.utils.CrashLogHelper.install(this)
+        // 通知通道：启动就建好（否则体检会把"还没建"误报成"被停用"，用户也没法提前单独配置）
+        com.haooz.chedule.reminder.CourseReminderHelper.ensureAllNotificationChannels(this)
         // 埋点入口：FeatureLog 已抽到 :core（供 viewmodel 等平台中立代码使用），
         // 真正的轨迹记录在这里接回 CrashLogHelper。必须在 install 之后 —— 未注入时
         // FeatureLog 静默丢弃，不会崩，但录制中的轨迹会丢，排查时容易误判。

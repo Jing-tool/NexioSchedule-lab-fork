@@ -152,6 +152,11 @@ fun HolidaySettingsScreen(
     // 由 Android 宿主注入：CourseReminderHelper.onHolidayDataChanged(context)。
     // 不直接调 reminder 模块 —— 那是 Android 专有的（内部要 Context，桌面/iOS 无此概念）。
     onHolidayDataChanged: () -> Unit = {},
+    // 「立即发一条测试」：Android 宿主注入 CourseReminderHelper.sendReturnDayReminderNow(context, prep)。
+    // 传 null = 这一端没有通知能力 → 不渲染按钮（照 SettingsScreen 的 onSendTestNotification 约定，
+    // 别给一个点了没反应的按钮）。commonMain 不许碰 android.*，所以只能走回调。
+    onSendReturnDayBalanceTest: (() -> Unit)? = null,
+    onSendReturnDayPrepTest: (() -> Unit)? = null,
 ) {
     val haptic = LocalHapticFeedback.current
     val holidayDataRevision by HolidayManager.dataRevision.collectAsState()
@@ -658,6 +663,19 @@ fun HolidaySettingsScreen(
 
             item {
                 SectionTitleRow(
+                    text = "假期余额提醒",
+                    description = "• 假期期间每天一条，含假期最后一天（不占超级岛/实时动态的位置）\n" +
+                        "• 独立开关：不再挂在「节假日课程排除」下面 —— 关掉豁免不会连带关掉余额提醒",
+                    liquidGlassBackdrop = liquidGlassBackdrop,
+                )
+                HolidayBalanceCard(
+                    onSettingsChanged = onHolidayDataChanged,
+                    onSendTest = onSendReturnDayBalanceTest,
+                )
+            }
+
+            item {
+                SectionTitleRow(
                     text = "节假日课程排除",
                     description =
                         "• 假期前一天或最后一天的几节课不用上课\n" +
@@ -730,6 +748,19 @@ fun HolidaySettingsScreen(
                         },
                     )
                 }
+            }
+
+            item {
+                SectionTitleRow(
+                    text = "返校准备清单",
+                    description = "• 返校日到点推一条普通通知，内容自己写\n" +
+                        "• 独立开关：不依赖「节假日课程排除」，关掉豁免它照样会响",
+                    liquidGlassBackdrop = liquidGlassBackdrop,
+                )
+                ReturnDayPrepCard(
+                    onSettingsChanged = onHolidayDataChanged,
+                    onSendTest = onSendReturnDayPrepTest,
+                )
             }
         }
     }
@@ -2320,3 +2351,328 @@ private fun pickerTextStyle() = MiuixTheme.textStyles.body1.copy(
     fontSize = 22.sp,
     fontWeight = FontWeight.Medium,
 )
+
+// ============ 假期余额提醒 / 返校准备清单（本地定制，上游没有） ============
+
+// commonMain 没有 JVM 的 String.format（旧代码用的 "%02d:%02d"），改成 padStart 手写补零
+private fun twoDigits(value: Int): String = value.toString().padStart(2, '0')
+private fun clockLabel(hour: Int, minute: Int): String = "${twoDigits(hour)}:${twoDigits(minute)}"
+
+/** 时/分两个滚轮；余额与清单共用（旧实现里就是文件级 private，别各自复制一份）。 */
+@Composable
+private fun timePickerDialog(
+    title: String,
+    show: Boolean,
+    hour: Int,
+    minute: Int,
+    onDismiss: () -> Unit,
+    onConfirm: (Int, Int) -> Unit,
+) {
+    OverlayDialog(
+        title = title,
+        summary = null,
+        show = show,
+        liquidGlassBackdrop = null,
+        onDismissRequest = onDismiss,
+    ) {
+        var draftHour by remember(show) { mutableIntStateOf(hour) }
+        var draftMinute by remember(show) { mutableIntStateOf(minute) }
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                NumberPicker(
+                    draftHour,
+                    { draftHour = it },
+                    range = 0..23,
+                    visibleItemCount = 3,
+                    itemHeight = 44.dp,
+                    textStyle = pickerTextStyle(),
+                    label = { twoDigits(it) },
+                    modifier = Modifier.weight(1f),
+                )
+                NumberPicker(
+                    draftMinute,
+                    { draftMinute = it },
+                    range = 0..59,
+                    visibleItemCount = 3,
+                    itemHeight = 44.dp,
+                    textStyle = pickerTextStyle(),
+                    label = { twoDigits(it) },
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton("取消", onDismiss, modifier = Modifier.weight(1f))
+                TextButton(
+                    "保存",
+                    { onConfirm(draftHour, draftMinute) },
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 「返校准备清单」独立成卡。
+ *
+ * 旧实现在「节假日首末课程排除」卡的 `if (enabled)` 里面，但它的触发只依赖自己的开关
+ * （`getReturnDayPrepEnabled() && isReturnDay(今天)`）—— 豁免关掉它照样会在周日/假期最后一天响。
+ * "配置被藏起来、功能却还在跑"是同一类毛病，所以抬出来自己一张卡。
+ * 设置读写一律走 CourseRepository（键名与旧值一致），commonMain 不碰 android.*。
+ */
+@Composable
+private fun ReturnDayPrepCard(
+    onSettingsChanged: () -> Unit,
+    onSendTest: (() -> Unit)?,
+) {
+    val repository = remember { CourseRepository.getInstance() }
+    var enabled by remember { mutableStateOf(repository.getReturnDayPrepEnabled()) }
+    var hour by remember { mutableIntStateOf(repository.getReturnDayPrepHour()) }
+    var minute by remember { mutableIntStateOf(repository.getReturnDayPrepMinute()) }
+    var text by remember { mutableStateOf(repository.getReturnDayPrepText()) }
+    var showTimeDialog by remember { mutableStateOf(false) }
+    var showTextDialog by remember { mutableStateOf(false) }
+
+    Card(
+        cornerRadius = 20.dp,
+        modifier = Modifier.fillMaxWidth(),
+        insideMargin = PaddingValues(0.dp),
+    ) {
+        Column {
+            SwitchPreference(
+                title = "返校准备清单",
+                summary = if (enabled) {
+                    "返校日 ${clockLabel(hour, minute)} 提醒要带的东西"
+                } else {
+                    // 不能写死"中午"：提醒时间可自定义，关掉时也该反映真实时间
+                    "返校日 ${clockLabel(hour, minute)} 提醒要带的东西（默认关闭）"
+                },
+                checked = enabled,
+                onCheckedChange = { checked ->
+                    enabled = checked
+                    repository.setReturnDayPrepEnabled(checked)
+                    onSettingsChanged()
+                },
+            )
+            if (enabled) {
+                ArrowPreference(
+                    title = "提醒时间",
+                    summary = clockLabel(hour, minute),
+                    onClick = { showTimeDialog = true },
+                )
+                ArrowPreference(
+                    title = "清单内容",
+                    summary = text,
+                    onClick = { showTextDialog = true },
+                )
+                if (onSendTest != null) {
+                    ArrowPreference(
+                        title = "立即发一条测试",
+                        summary = "随时点，不影响每天只发一次的去重",
+                        onClick = { onSendTest() },
+                    )
+                }
+            }
+            Text(
+                "• 触发条件：当天休息 且 次日要上课（普通周日、假期最后一天）\n" +
+                    "• 独立开关：不依赖「节假日课程排除」，关掉豁免它照样会响",
+                style = MiuixTheme.textStyles.body1.copy(
+                    fontSize = 13.sp,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                ),
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+            )
+        }
+    }
+
+    timePickerDialog(
+        title = "清单提醒时间",
+        show = showTimeDialog,
+        hour = hour,
+        minute = minute,
+        onDismiss = { showTimeDialog = false },
+        onConfirm = { h, m ->
+            hour = h
+            minute = m
+            repository.setReturnDayPrepHour(h)
+            repository.setReturnDayPrepMinute(m)
+            onSettingsChanged()
+            showTimeDialog = false
+        },
+    )
+
+    OverlayDialog(
+        title = "清单内容",
+        summary = null,
+        show = showTextDialog,
+        liquidGlassBackdrop = null,
+        onDismissRequest = { showTextDialog = false },
+    ) {
+        var draftText by remember(showTextDialog) { mutableStateOf(text) }
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(
+                "返校日按上面设定的时间推送这条内容，用 / 分隔要带的东西",
+                style = MiuixTheme.textStyles.body1.copy(
+                    fontSize = 14.sp,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                ),
+            )
+            NativeMiuixTextField(
+                draftText,
+                { draftText = it },
+                label = "清单内容",
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton("取消", { showTextDialog = false }, modifier = Modifier.weight(1f))
+                TextButton(
+                    "保存",
+                    {
+                        // 空串/纯空白由数据层兜底成默认文案（getReturnDayPrepText 保证非空），
+                        // 不在这里复制 DEFAULT_RETURN_DAY_PREP_TEXT —— 默认值只能有一份。
+                        // 改文案不需要重排闹钟（正文是到点现取的），所以不调 onSettingsChanged。
+                        repository.setReturnDayPrepText(draftText)
+                        text = repository.getReturnDayPrepText()
+                        showTextDialog = false
+                    },
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 「假期余额提醒」独立成卡。
+ *
+ * 旧实现里它在「节假日课程排除」卡的 `if (enabled)` 里面 —— 关掉豁免余额提醒就凭空消失，
+ * 而两者其实没有从属关系（余额=假期还剩几天，豁免=返校那天上哪几节）。
+ */
+@Composable
+private fun HolidayBalanceCard(
+    onSettingsChanged: () -> Unit,
+    onSendTest: (() -> Unit)?,
+) {
+    val repository = remember { CourseRepository.getInstance() }
+    var enabled by remember { mutableStateOf(repository.getReturnDayBalanceEnabled()) }
+    var hour by remember { mutableIntStateOf(repository.getReturnDayBalanceHour()) }
+    var minute by remember { mutableIntStateOf(repository.getReturnDayBalanceMinute()) }
+    var leadDays by remember { mutableIntStateOf(repository.getReturnDayBalanceLeadDays()) }
+    var showTimeDialog by remember { mutableStateOf(false) }
+    var showLeadDaysDialog by remember { mutableStateOf(false) }
+
+    val leadSummary = if (leadDays <= 0) "假期期间每天" else "只在最后 $leadDays 天"
+
+    Card(
+        cornerRadius = 20.dp,
+        modifier = Modifier.fillMaxWidth(),
+        insideMargin = PaddingValues(0.dp),
+    ) {
+        Column {
+            SwitchPreference(
+                title = "假期余额提醒",
+                summary = when {
+                    !enabled -> "已关闭"
+                    // 摘要必须跟着「从哪天开始提醒」走，否则开了"只在最后 N 天"却仍写着"每天"，自相矛盾
+                    leadDays <= 0 -> "假期中每天 ${clockLabel(hour, minute)} 提醒还剩几天"
+                    else -> "只在假期最后 $leadDays 天的 ${clockLabel(hour, minute)} 提醒"
+                },
+                checked = enabled,
+                onCheckedChange = { checked ->
+                    enabled = checked
+                    repository.setReturnDayBalanceEnabled(checked)
+                    onSettingsChanged()
+                },
+            )
+            if (enabled) {
+                ArrowPreference(
+                    title = "提醒时间",
+                    summary = clockLabel(hour, minute),
+                    onClick = { showTimeDialog = true },
+                )
+                ArrowPreference(
+                    title = "从哪天开始提醒",
+                    summary = leadSummary,
+                    onClick = { showLeadDaysDialog = true },
+                )
+                if (onSendTest != null) {
+                    ArrowPreference(
+                        title = "立即发一条测试",
+                        summary = "随时点，不影响每天只发一次的去重",
+                        onClick = { onSendTest() },
+                    )
+                }
+            }
+            Text(
+                "• 假期期间每天都发一条，含假期最后一天（以前最后一天会漏掉）\n" +
+                    "• 最后一天的文案跟「假期末天课程排除」开关走：" +
+                    "开着说「收拾一下准备返校」，关着只说「好好休息」\n" +
+                    "• 不占超级岛/实时动态的位置，只是普通通知",
+                style = MiuixTheme.textStyles.body1.copy(
+                    fontSize = 13.sp,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                ),
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+            )
+        }
+    }
+
+    timePickerDialog(
+        title = "余额提醒时间",
+        show = showTimeDialog,
+        hour = hour,
+        minute = minute,
+        onDismiss = { showTimeDialog = false },
+        onConfirm = { h, m ->
+            hour = h
+            minute = m
+            repository.setReturnDayBalanceHour(h)
+            repository.setReturnDayBalanceMinute(m)
+            onSettingsChanged()
+            showTimeDialog = false
+        },
+    )
+
+    OverlayDialog(
+        title = "从哪天开始提醒",
+        summary = null,
+        show = showLeadDaysDialog,
+        liquidGlassBackdrop = null,
+        onDismissRequest = { showLeadDaysDialog = false },
+    ) {
+        var draftLead by remember(showLeadDaysDialog) { mutableIntStateOf(leadDays) }
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(
+                "默认（每天）整个假期都会提醒；选「最后 N 天」则只在剩余天数少于 N 天时提醒。",
+                style = MiuixTheme.textStyles.body1.copy(
+                    fontSize = 14.sp,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                ),
+            )
+            NumberPicker(
+                draftLead,
+                { draftLead = it },
+                range = 0..7,
+                visibleItemCount = 3,
+                itemHeight = 44.dp,
+                textStyle = pickerTextStyle(),
+                label = { if (it == 0) "每天" else "最后${it}天" },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton("取消", { showLeadDaysDialog = false }, modifier = Modifier.weight(1f))
+                TextButton(
+                    "保存",
+                    {
+                        leadDays = draftLead
+                        repository.setReturnDayBalanceLeadDays(draftLead)
+                        onSettingsChanged()
+                        showLeadDaysDialog = false
+                    },
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+    }
+}
+

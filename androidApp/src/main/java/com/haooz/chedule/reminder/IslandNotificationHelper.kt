@@ -13,15 +13,13 @@ import androidx.core.content.edit
 import com.haooz.chedule.R
 import com.haooz.chedule.shizuku.ShizukuManager
 import com.haooz.chedule.ui.activities.MainActivity
+import com.haooz.chedule.ui.utils.AndroidReminderController
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
-import kotlin.time.Duration.Companion.milliseconds
 
 object IslandNotificationHelper {
     private const val TAG = "IslandNotificationHelper"
@@ -30,6 +28,8 @@ object IslandNotificationHelper {
     private const val KEY_ISLAND_EXPAND_GLOW_ENABLED = "island_expand_glow_enabled"
     // 课中提醒：到点后「已上课」替换为模板6进度卡片
     const val KEY_IN_CLASS_REMINDER = "island_in_class_enabled"
+    // 课中岛缩略态 B 区：0=正在上课（静态文案），1=距下课倒计时，-1=**未设置**（哨兵，跟随课前 B 区）
+    private const val KEY_IN_CLASS_RIGHT_MODE = "island_in_class_right_mode"
     // 官方必选：运营场景标识
     private const val BUSINESS_TAG = "course_reminder"
     // 官方 sequence：保证多次更新不乱序
@@ -44,13 +44,23 @@ object IslandNotificationHelper {
     // 课中提醒模板6 独立 ID：与「已上课」两条路径完全分开，不在同一条通知里 if/else
     const val ISLAND_IN_CLASS_NOTIFICATION_ID = 1005
     const val ISLAND_IN_CLASS_TEST_NOTIFICATION_ID = 5002
+
+    /** 「返校」岛（返校日前一晚提醒），与课程岛 ID 隔开，互不干扰 */
+    const val ISLAND_RETURN_DAY_NOTIFICATION_ID = 1006
     // 到点后由精确闹钟自动收起，不依赖每分钟对账
     const val ISLAND_STARTED_VISIBLE_MS = 15_000L
     private const val ISLAND_DISMISS_RC_BASE = 72000
 
-    private val scope = CoroutineScope(Dispatchers.IO)
-    // 串行化 Shizuku bypass，避免并发导致 XMSF 网络状态错乱
-    private val shizukuBypassMutex = Mutex()
+    /**
+     * 岛相关操作**串行、按提交顺序**执行。
+     *
+     * 必须如此：测试按钮一次会连做「cancel(5001) / cancel(5002) / notify(5000)」，
+     * 而发送与取消现在都要经过 XMSF 绕白名单窗口；若丢到多线程池里并发跑，
+     * `cancel(5000)` 完全可能落在 `notify(5000)` **之后**，把刚发出去的岛又撤掉。
+     * limitedParallelism(1) 保证同一时刻只有一个在跑。
+     */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    private val scope = CoroutineScope(Dispatchers.IO.limitedParallelism(1))
     // 课中倒计时由系统 Chronometer 自刷；ticker 已退役，仅保留 stop 以兼容清理路径
     private var inClassTickJob: Job? = null
     private val inClassTickLock = Any()
@@ -208,42 +218,116 @@ object IslandNotificationHelper {
         }
     }
 
-    // Mutex 串行化 disable→notify→enable；finally 保证 XMSF 网络一定恢复
+    // ===== XMSF 绕白名单：**批量窗口** =====
+    //
+    // 为什么不再用"每条通知各自 disable→notify→100ms→enable"：
+    //
+    // 1) **连续通知会踩空**。测试按钮一次要连做「2 次 cancel + 1 次 send」；
+    //    每条各自开一次窗口的话，前一条 restore 之后、后一条 disable 之前有一个真实的空档，
+    //    系统又是异步处理通知的 —— 落在这个空档里的那条就不是"断网态下发出去的"，
+    //    表现就是**焦点通知被降级成普通通知**（用户实测："一起发过来"时出现）。
+    // 2) **取消也必须走同一个窗口**。岛是在断网态下发出去的，只用普通 cancel(id) 有时
+    //    清不掉焦点通知那一份，于是下课时岛消失了、通知栏里却留着一张普通通知
+    //    —— 这就是"回落成普通通知"。
+    //
+    // 所以改成：一批操作**共用同一个关网窗口**，第一条负责关，之后每条只把关闭时间往后推，
+    // 最后一条之后静默 BYPASS_QUIET_MS 才恢复；并有 BYPASS_MAX_HOLD_MS 硬上限，绝不长期断网。
+    // 关网前落"待恢复"标记，恢复成功才清；进程被杀由启动路径自愈。
+    private const val BYPASS_QUIET_MS = 400L
+    private const val BYPASS_MAX_HOLD_MS = 3_000L
+
+    private val bypassLock = Any()
+    private var bypassWindowOpen = false
+    private var bypassDepth = 0
+    private var bypassOpenedAt = 0L
+    private var bypassCloseJob: Job? = null
+
+    /**
+     * 在"XMSF 网络关闭"的窗口里执行 [block]（发送**或**取消都走这里）。
+     * 连续调用共用同一个窗口。
+     */
+    private suspend fun <T> withXmsfBypass(
+        context: Context,
+        useBypass: Boolean,
+        block: () -> T
+    ): T {
+        if (!useBypass || !isShizukuAvailable()) return block()
+        synchronized(bypassLock) {
+            bypassDepth++
+            if (!bypassWindowOpen) {
+                bypassCloseJob?.cancel()
+                bypassCloseJob = null
+                val ok = try {
+                    ShizukuManager.markXmsfRestorePending(context)
+                    ShizukuManager.setXmsfNetworkingEnabled(context, false)
+                } catch (e: Exception) {
+                    NexioLog.e(TAG, "Failed to disable XMSF networking", e)
+                    false
+                }
+                bypassWindowOpen = ok
+                bypassOpenedAt = System.currentTimeMillis()
+                if (!ok) {
+                    // 没真的断网就没有"待恢复"这回事
+                    ShizukuManager.clearXmsfRestorePending(context)
+                    NexioLog.w(TAG, "XMSF bypass window not opened, running without bypass")
+                }
+            }
+        }
+        try {
+            return block()
+        } finally {
+            synchronized(bypassLock) {
+                bypassDepth--
+                if (bypassDepth <= 0) {
+                    bypassDepth = 0
+                    scheduleBypassClose(context)
+                }
+            }
+        }
+    }
+
+    /** 静默期后再恢复；超过硬上限则立刻恢复。 */
+    private fun scheduleBypassClose(context: Context) {
+        if (!bypassWindowOpen) return
+        val held = System.currentTimeMillis() - bypassOpenedAt
+        val wait = if (held >= BYPASS_MAX_HOLD_MS) {
+            0L
+        } else {
+            minOf(BYPASS_QUIET_MS, BYPASS_MAX_HOLD_MS - held)
+        }
+        bypassCloseJob?.cancel()
+        bypassCloseJob = scope.launch {
+            if (wait > 0) delay(wait)
+            closeBypassWindow(context)
+        }
+    }
+
+    private fun closeBypassWindow(context: Context) {
+        synchronized(bypassLock) {
+            if (!bypassWindowOpen || bypassDepth > 0) return
+            try {
+                ShizukuManager.setXmsfNetworkingEnabled(context, true)
+                ShizukuManager.clearXmsfRestorePending(context)
+                NexioLog.d(TAG, "XMSF networking restored")
+            } catch (e: Exception) {
+                // 保留"待恢复"标记，交给启动路径自愈
+                NexioLog.e(TAG, "CRITICAL: Failed to restore XMSF networking!", e)
+            }
+            bypassWindowOpen = false
+        }
+    }
+
+    /** 正在绕白名单窗口里吗？自愈逻辑用它避免把窗口中途掀掉。 */
+    fun isXmsfBypassInFlight(): Boolean = synchronized(bypassLock) { bypassWindowOpen || bypassDepth > 0 }
+
     private suspend fun withShizukuBypass(
         context: Context,
         notificationId: Int,
         notification: Notification,
         useShizukuBypass: Boolean
     ) {
-        if (!useShizukuBypass || !isShizukuAvailable()) {
+        withXmsfBypass(context, useShizukuBypass) {
             sendNotificationDirect(context, notificationId, notification)
-            return
-        }
-        shizukuBypassMutex.withLock {
-            val disabled = try {
-                ShizukuManager.setXmsfNetworkingEnabled(context, false)
-            } catch (e: Exception) {
-                NexioLog.e(TAG, "Failed to disable XMSF networking", e)
-                sendNotificationDirect(context, notificationId, notification)
-                return@withLock
-            }
-            if (!disabled) {
-                NexioLog.w(TAG, "Failed to disable XMSF networking, sending notification anyway")
-                sendNotificationDirect(context, notificationId, notification)
-                return@withLock
-            }
-            try {
-                NexioLog.d(TAG, "XMSF networking disabled, sending notification")
-                sendNotificationDirect(context, notificationId, notification)
-                delay(100.milliseconds)
-            } finally {
-                try {
-                    ShizukuManager.setXmsfNetworkingEnabled(context, true)
-                    NexioLog.d(TAG, "XMSF networking restored")
-                } catch (e: Exception) {
-                    NexioLog.e(TAG, "CRITICAL: Failed to restore XMSF networking!", e)
-                }
-            }
         }
     }
 
@@ -336,20 +420,48 @@ object IslandNotificationHelper {
 
     // 收起指定岛态，并连带收起同课其它态，避免残留
     fun cancelIslandState(context: Context, notificationId: Int) {
+        val siblings = siblingIdsFor(notificationId)
+        cancelIdsWithBypassRetry(
+            context,
+            IntArray(1 + siblings.size).also {
+                it[0] = notificationId
+                siblings.copyInto(it, 1)
+            },
+        )
+    }
+
+    /**
+     * 同步撤一次（保证 UI 立刻响应、不依赖 Shizuku），再用**与发送同一个绕白名单窗口**补撤一次。
+     *
+     * 岛/焦点通知是在"XMSF 断网"状态下发出去的，只用普通 cancel 有时清不掉焦点通知那一份：
+     * 表现就是岛从状态栏消失了、通知栏里却留着一张普通通知 ——
+     * 也就是用户实测的"下课后回落成普通通知"。
+     */
+    private fun cancelIdsWithBypassRetry(context: Context, ids: IntArray) {
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        manager.cancel(notificationId)
-        for (id in siblingIdsFor(notificationId)) manager.cancel(id)
+        for (id in ids) manager.cancel(id)
+        if (!isShizukuAvailable()) return
+        scope.launch {
+            withXmsfBypass(context, useBypass = true) {
+                for (id in ids) manager.cancel(id)
+            }
+        }
     }
 
     fun cancelIslandNotifications(context: Context) {
         stopInClassTicker()
-        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        manager.cancel(ISLAND_NOTIFICATION_ID)
-        manager.cancel(ISLAND_STARTED_NOTIFICATION_ID)
-        manager.cancel(ISLAND_IN_CLASS_NOTIFICATION_ID)
-        manager.cancel(ISLAND_TEST_NOTIFICATION_ID)
-        manager.cancel(ISLAND_STARTED_TEST_NOTIFICATION_ID)
-        manager.cancel(ISLAND_IN_CLASS_TEST_NOTIFICATION_ID)
+        cancelIdsWithBypassRetry(
+            context,
+            intArrayOf(
+                ISLAND_NOTIFICATION_ID,
+                ISLAND_STARTED_NOTIFICATION_ID,
+                ISLAND_IN_CLASS_NOTIFICATION_ID,
+                ISLAND_RETURN_DAY_NOTIFICATION_ID,
+                ISLAND_TEST_NOTIFICATION_ID,
+                ISLAND_STARTED_TEST_NOTIFICATION_ID,
+                ISLAND_IN_CLASS_TEST_NOTIFICATION_ID,
+            ),
+        )
     }
 
     // courseStartMillis 是课程开始时间的唯一真源，倒计时/文案/已上课态都由它派生
@@ -578,8 +690,14 @@ object IslandNotificationHelper {
         val prefs = context.getSharedPreferences("course_reminder_prefs", Context.MODE_PRIVATE)
         val expandGlowEnabled = prefs.getBoolean(KEY_ISLAND_EXPAND_GLOW_ENABLED, true)
         val aodMode = prefs.getInt("island_aod_mode", 0)
-        // 课中岛缩略态 B 区：0=正在上课（静态文案），1=距下课倒计时
-        val inClassRightMode = prefs.getInt("island_in_class_right_mode", 0)
+        // 课中岛缩略态 B 区：0=正在上课（静态文案），1=距下课倒计时；未设置(-1)则跟随课前 B 区。
+        // 判定**只有一处真源**：:core 的 ReminderController（设置页与此处共用一份），别在这里再写一套。
+        // 课前 B 区用 island_right_mode（0=课程名 / 1=上课地点 / 2=倒计时，默认 1）——
+        // 翻译成课中语义（课前=2 → 课中=1，其余 → 0）也由它负责。
+        val inClassRightMode = AndroidReminderController(context).effectiveInClassRightMode(
+            preClassMode = prefs.getInt("island_right_mode", 1),
+            inClassMode = prefs.getInt(KEY_IN_CLASS_RIGHT_MODE, -1),
+        )
 
         val now = System.currentTimeMillis()
         val counting = courseEndMillis > now
@@ -874,7 +992,15 @@ object IslandNotificationHelper {
         )
     }
 
-    fun sendTestIslandNotification(context: Context) {
+    fun sendTestIslandNotification(
+        context: Context,
+        /** 距"上课"还有多久发这条倒计时（0 = 已经上课了） */
+        startDelayMs: Long = 70_000L,
+        /** 课时长度 */
+        durationMs: Long = 120_000L,
+        /** 直接落到哪个状态；COUNTDOWN 走完整时序（到点由对账/闹钟自动切换） */
+        phase: ReminderTestPhase = ReminderTestPhase.COUNTDOWN,
+    ) {
         if (!isIslandSupported(context)) {
             NexioLog.w(TAG, "Island not supported on this device")
             return
@@ -888,9 +1014,9 @@ object IslandNotificationHelper {
         val testNotificationId = ISLAND_TEST_NOTIFICATION_ID
 
         // 时间串也由这两个时间戳派生，否则岛上显示与倒计时对不上，无法判断是否正确
-        // 测试课：课前 1 分 10 秒倒计时 + 课中 2 分钟
-        val courseStartTimestamp = System.currentTimeMillis() + 70_000L
-        val courseEndTimestamp = courseStartTimestamp + 120_000L
+        // 测试课：默认课前 1 分 10 秒倒计时 + 课中 2 分钟；场景可覆盖
+        val courseStartTimestamp = System.currentTimeMillis() + startDelayMs
+        val courseEndTimestamp = courseStartTimestamp + durationMs
         val startTime = formatClock(courseStartTimestamp)
         val endTime = formatClock(courseEndTimestamp)
 
@@ -913,6 +1039,36 @@ object IslandNotificationHelper {
         kickWidgetRefresh(context)
         // 测试课也要走「上课自动开启、下课自动关闭」，否则勿扰链路在测试里跑不到
         ClassDndHelper.syncTestClassDndAlarms(context)
+
+        // 场景要直接落到「已上课」/「课中」：走主路径那两支函数本身，
+        // 只是**绕过用户开关**（测试工具的意义就是把某一条分支单独验出来）。
+        // 倒计时场景不在这里发：它留给到点后的对账/闹钟自动切换，才是真实时序。
+        if (phase != ReminderTestPhase.COUNTDOWN) {
+            if (phase == ReminderTestPhase.STARTED) {
+                sendClassStartedNotification(
+                    context = context,
+                    courseName = courseName,
+                    classroom = classroom,
+                    section = section,
+                    startTime = startTime,
+                    endTime = endTime,
+                    notificationId = testNotificationId,
+                    testMode = true,
+                )
+            } else {
+                sendInClassIslandNotification(
+                    context = context,
+                    courseName = courseName,
+                    classroom = classroom,
+                    section = section,
+                    startTime = startTime,
+                    endTime = endTime,
+                    notificationId = testNotificationId,
+                    testMode = true,
+                )
+            }
+            return
+        }
 
         val contentIntent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -1027,9 +1183,10 @@ object IslandNotificationHelper {
                 )
             } else {
                 // 「距下课」未进窗或无有效下课时间：只收倒计时，不发已上课；
-                // 标记 switched 交给对账，进窗后再切课中（不可因 end>start 就提前挂卡）
-                val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-                manager.cancel(countdownIdFor(notificationId))
+                // 标记 switched 交给对账，进窗后再切课中（不可因 end>start 就提前挂卡）。
+                // 走绕白名单窗口撤：倒计时岛也是"断网态"发出去的，
+                // 普通 cancel 清不掉的话它会作为普通通知留在通知栏里。
+                cancelIdsWithBypassRetry(context, intArrayOf(countdownIdFor(notificationId)))
                 IslandState.markSwitched(context, testMode = effectiveTestMode)
             }
             return
@@ -1073,10 +1230,12 @@ object IslandNotificationHelper {
             return
         }
 
-        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        manager.cancel(countdownId)
-        // 收起可能残留的课中岛
-        manager.cancel(activeIdFor(notificationId, inClass = true))
+        // 走绕白名单窗口撤：否则上一态（倒计时/课中）的焦点通知可能清不干净，
+        // 变成一张普通通知留在通知栏里
+        cancelIdsWithBypassRetry(
+            context,
+            intArrayOf(countdownId, activeIdFor(notificationId, inClass = true)),
+        )
 
         val title = if (startTime.isNotEmpty()) "$courseName $startTime" else courseName
         val content = buildIslandContent(section, classroom, teacher = "", isCustomTime = isCustomTime)
@@ -1128,9 +1287,11 @@ object IslandNotificationHelper {
             return
         }
 
-        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        manager.cancel(countdownId)
-        manager.cancel(activeIdFor(notificationId, inClass = false))
+        // 同 sendClassStartedNotification：撤上一态也走绕白名单窗口
+        cancelIdsWithBypassRetry(
+            context,
+            intArrayOf(countdownId, activeIdFor(notificationId, inClass = false)),
+        )
 
         val params = buildInClassIslandParamsJson(
             context = context,
@@ -1171,6 +1332,96 @@ object IslandNotificationHelper {
         scheduleIslandDismissAt(context, inClassId, startMillis, endMillis)
         stopInClassTicker()
         kickWidgetRefresh(context)
+    }
+
+    /**
+     * 「返校」超级岛。日子词由 [targetDate] 决定（可能是「今晚返校」/「明天返校」/「今天返校」），
+     * 不要写死 —— 它必须与正文所依据的那一天一致，且与原生实时动态**共用同一份**
+     *（[CourseReminderHelper.returnDayVerb]，本项目已有「文案只有一份实现」的取舍）。
+     *
+     * 复用课前倒计时的组件与发送路径，只换成静态文案、不带倒计时。
+     * **不新开通道，也不触碰 XMSF 绕白名单那段逻辑。**
+     */
+    fun sendReturnDayIslandNotification(
+        context: Context,
+        courseName: String,
+        section: String,
+        startTime: String,
+        /** 正文字段所依据的日期（可能今天、可能明天）—— 日子词由它决定，不能写死 */
+        targetDate: java.time.LocalDate,
+        notificationId: Int = ISLAND_RETURN_DAY_NOTIFICATION_ID,
+        /** 形如 "中秋最后一天"；有则在标题里点明是哪段假期 */
+        holidayLabel: String? = null,
+        /**
+         * 非空时注入进度组件2。注入前会先摘掉 hintInfo（按钮组件），
+         * 组件组合因此正好等于模板库的**模板6**（文本组件2 + 识别图形组件1 + 进度组件2）。
+         */
+        progressPercent: Int? = null,
+    ) {
+        if (!isIslandSupported(context)) return
+        // 与原生实时动态**共用同一份日子词**，别在这里再写一套
+        val verb = CourseReminderHelper.returnDayVerb(targetDate, startTime)
+        val title = if (holidayLabel.isNullOrBlank()) verb else verb + " · " + holidayLabel
+        val content = buildString {
+            if (courseName.isNotEmpty()) append(courseName)
+            if (section.isNotEmpty()) append("｜").append(section)
+            if (startTime.isNotEmpty()) append(" ").append(startTime)
+            // 兜底文案不能说"明天要上课"：明天可能只是"要上学但没有课"，那样是假话
+            if (isEmpty()) append(verb).append("，别忘了收拾东西")
+        }
+        // courseStartMillis = null → 静态岛（不画倒计时），左右槽位回落到课程名/教室
+        val paramsRaw = buildIslandParamsJson(
+            context = context,
+            title = title,
+            content = content,
+            courseName = title,
+            section = section,
+            startTime = startTime,
+            classroom = "返校",
+            courseStartMillis = null,
+        )
+        // 传 courseStartMillis=null 会落到"已上课"态，于是 hintInfo 与 B 区 title 都被写成
+        //「已上课 / 现在」；而 hintInfo 是"圆头图文按钮"组件，对静态提醒没有意义。
+        // 处理：去掉 hintInfo，把 B 区标题换成节次 —— 组件组合正好变成模板库的模板6。
+        val staticRightText = section.ifBlank { "返校" }
+        val params = runCatching {
+            val root = JSONObject(paramsRaw)
+            val paramV2 = root.optJSONObject("param_v2") ?: return@runCatching paramsRaw
+            paramV2.remove("hintInfo")
+            // timeout 的语义是"焦点通知多久后消失"（min）。静态提醒走的是 counting=false 分支，
+            // 那里给的是 5 分钟（给「已上课」15 秒收起留的余量）—— 对「返校」太短了，这里放宽到 4 小时。
+            paramV2.put("timeout", 240)
+            // 岛也放宽到 12 小时：这是当晚提醒，不该 60 分钟就掉
+            paramV2.optJSONObject("param_island")?.put("islandTimeout", 12 * 60 * 60)
+            paramV2.optJSONObject("param_island")
+                ?.optJSONObject("bigIslandArea")
+                ?.optJSONObject("textInfo")
+                ?.put("title", staticRightText)
+            if (progressPercent != null) {
+                // 进度组件2（纯净版）：只传 progress/颜色，不传任何 picXXX 字段
+                paramV2.put(
+                    "progressInfo",
+                    JSONObject().apply {
+                        put("progress", progressPercent.coerceIn(0, 100))
+                        put("colorProgress", "#FF7C4DFF")
+                        put("colorProgressEnd", "#FF2196F3")
+                    },
+                )
+            }
+            root.toString()
+        }.getOrDefault(paramsRaw)
+        sendIslandNotification(
+            context = context,
+            notificationId = notificationId,
+            title = title,
+            content = content,
+            courseName = title,
+            section = section,
+            startTime = startTime,
+            classroom = "返校",
+            courseStartMillis = null,
+            islandParamsOverride = params,
+        )
     }
 
     // 距下一次「剩余分钟」跳变的毫秒数；小组件刷新链仍按分钟对账

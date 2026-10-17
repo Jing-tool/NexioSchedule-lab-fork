@@ -139,7 +139,7 @@ internal object UpdateInstaller {
         //   顺带挡住"下载被替换/半成品"这类事。校验不过就删掉，绝不交给安装器。
         if (!signatureMatchesOwn(context, file)) {
             file.delete()
-            Toast.makeText(context, "安装包与当前版本签名不一致（可能是另一个变体），已删除", Toast.LENGTH_LONG).show()
+            showToast("安装包与当前版本签名不一致（可能是另一个变体），已删除", longDuration = true)
             onFinished?.invoke()
             return
         }

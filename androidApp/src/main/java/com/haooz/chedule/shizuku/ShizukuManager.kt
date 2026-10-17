@@ -112,7 +112,7 @@ object ShizukuManager {
             context.getSharedPreferences(XMSF_PREFS, Context.MODE_PRIVATE)
                 .edit().putBoolean(KEY_XMSF_PENDING_RESTORE, true).apply()
         } catch (e: Exception) {
-            Log.w(TAG, "markXmsfRestorePending failed", e)
+            NexioLog.w(TAG, "markXmsfRestorePending failed", e)
         }
     }
 
@@ -121,7 +121,7 @@ object ShizukuManager {
             context.getSharedPreferences(XMSF_PREFS, Context.MODE_PRIVATE)
                 .edit().remove(KEY_XMSF_PENDING_RESTORE).apply()
         } catch (e: Exception) {
-            Log.w(TAG, "clearXmsfRestorePending failed", e)
+            NexioLog.w(TAG, "clearXmsfRestorePending failed", e)
         }
     }
 
@@ -136,11 +136,11 @@ object ShizukuManager {
             return
         }
         if (!prefs.getBoolean(KEY_XMSF_PENDING_RESTORE, false)) return
-        Log.w(TAG, "pending XMSF restore found, healing")
+        NexioLog.w(TAG, "pending XMSF restore found, healing")
         val ok = try {
             setXmsfNetworkingEnabled(context, true)
         } catch (e: Exception) {
-            Log.e(TAG, "healPendingXmsfRestore failed", e)
+            NexioLog.e(TAG, "healPendingXmsfRestore failed", e)
             false
         }
         if (ok) clearXmsfRestorePending(context)

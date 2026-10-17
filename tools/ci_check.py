@@ -19,25 +19,34 @@ import re
 import sys
 
 ROOT = sys.argv[1] if len(sys.argv) > 1 else "."
-J = "app/src/main/java/com/haooz/chedule"
 
-F_GLASS_PERF = f"{J}/ui/utils/GlassPerf.kt"
-F_CARD = f"{J}/ui/components/CourseCard.kt"
-F_DAYCOL = f"{J}/ui/components/DayColumn.kt"
-F_TODAY = f"{J}/ui/screens/TodayScreen.kt"
-F_ISLAND = f"{J}/reminder/IslandNotificationHelper.kt"
-F_REMIND = f"{J}/reminder/CourseReminderHelper.kt"
-F_ALARM = f"{J}/reminder/AlarmReceiver.kt"
-F_SCEN = f"{J}/reminder/ReminderTestScenario.kt"
-F_MAINACT = f"{J}/ui/activities/MainActivity.kt"
-F_MAINSCHED = f"{J}/ui/screens/MainScheduleScreen.kt"
-F_SETTINGS = f"{J}/ui/screens/SettingsScreen.kt"
-F_REMSCREEN = f"{J}/ui/activities/CourseReminderScreen.kt"
-F_UPDCHECK = f"{J}/ui/utils/UpdateChecker.kt"
-F_UPDINST = f"{J}/ui/utils/UpdateInstaller.kt"
+# ── 模块布局 ─────────────────────────────────────────────────────────
+# 上游 1.6.5 起项目是 KMP 多模块：同一份逻辑按平台能力分落三处。
+# 旧的单模块 "app/src/main/java/com/haooz/chedule" 已整体退役。
+# ★ 在 commonMain 里出现 android.* / java.* 一律不合法（要 expect/actual 或挪到
+#   androidMain），所以下面这些路径同时也是"这段代码该放哪个模块"的说明。
+J_APP = "androidApp/src/main/java/com/haooz/chedule"              # Android 宿主：提醒/服务/组件/平台
+J_SHARED = "ui-shared/src/commonMain/kotlin/com/haooz/chedule"    # 共享 Compose UI
+J_CORE = "core/src/commonMain/kotlin/com/haooz/chedule"           # 跨平台数据层
+
+F_GLASS_PERF = f"{J_SHARED}/ui/utils/GlassPerf.kt"
+F_CARD = f"{J_SHARED}/ui/components/CourseCard.kt"
+F_DAYCOL = f"{J_SHARED}/ui/components/DayColumn.kt"
+F_TODAY = f"{J_SHARED}/ui/screens/TodayScreen.kt"
+F_ISLAND = f"{J_APP}/reminder/IslandNotificationHelper.kt"
+F_REMIND = f"{J_APP}/reminder/CourseReminderHelper.kt"
+F_ALARM = f"{J_APP}/reminder/AlarmReceiver.kt"
+F_SCEN = f"{J_APP}/reminder/ReminderTestScenario.kt"
+F_MAINACT = f"{J_APP}/ui/activities/MainActivity.kt"
+F_APPSHELL = f"{J_SHARED}/ui/activities/CourseScheduleApp.kt"
+F_MAINSCHED = f"{J_SHARED}/ui/screens/MainScheduleScreen.kt"
+F_SETTINGS = f"{J_SHARED}/ui/screens/SettingsScreen.kt"
+F_REMSCREEN = f"{J_SHARED}/ui/activities/CourseReminderScreen.kt"
+F_UPDCHECK = f"{J_APP}/ui/utils/UpdateChecker.kt"
+F_UPDINST = f"{J_APP}/ui/utils/UpdateInstaller.kt"
 WF_REL = ".github/workflows/sync-upstream-build-release.yml"
-F_UPDSET = f"{J}/ui/activities/UpdateSettingsScreen.kt"
-F_MANIFEST = "app/src/main/AndroidManifest.xml"
+F_UPDSET = f"{J_SHARED}/ui/activities/UpdateSettingsScreen.kt"
+F_MANIFEST = "androidApp/src/main/AndroidManifest.xml"
 
 _cache = {}
 
@@ -56,12 +65,13 @@ def read(rel):
 
 def walk_kt():
     """遍历所有 .kt（用于"全树只有一处实现"这类检查）"""
-    for base, _dirs, files in os.walk(os.path.join(ROOT, "app", "src", "main", "java")):
-        for name in files:
-            if name.endswith(".kt"):
-                full = os.path.join(base, name)
-                with open(full, encoding="utf-8", errors="replace") as fh:
-                    yield os.path.relpath(full, ROOT), fh.read()
+    for mod in (J_APP, J_SHARED, J_CORE):
+        for base, _dirs, files in os.walk(os.path.join(ROOT, mod)):
+            for name in files:
+                if name.endswith(".kt"):
+                    full = os.path.join(base, name)
+                    with open(full, encoding="utf-8", errors="replace") as fh:
+                        yield os.path.relpath(full, ROOT), fh.read()
 
 
 # (说明, 文件, 必须匹配的正则, 禁止匹配的正则)
@@ -194,25 +204,25 @@ CHECKS = [
         "总开关联动必须可逆（联动手动关掉的子开关，总开关再打开时要能恢复）",
         # 真实反馈：用户没动过「课中提醒」，却发现自己被静默关掉了 ——
         # 因为总开关关闭时会强制置 false 且**没有反向恢复**。
-        f"{J}/ui/activities/CourseReminderScreen.kt",
+        F_REMSCREEN,
         [r"val restoreMasterDependentSwitches = \{", r"restoreMasterDependentSwitches\(\)"],
         [],
     ),
     (
         "通知通道要在 Application 启动时创建（否则体检会把「还没建」误报成「被停用」）",
-        f"{J}/reminder/CourseReminderHelper.kt",
+        F_REMIND,
         [r"fun ensureAllNotificationChannels\(context: Context\)"],
         [],
     ),
     (
         "启动路径确实调了通道创建",
-        "app/src/main/java/com/haooz/chedule/NexioApplication.kt",
+        f"{J_APP}/NexioApplication.kt",
         [r"CourseReminderHelper\.ensureAllNotificationChannels\(this\)"],
         [],
     ),
     (
         "体检必须区分「通道未创建」与「通道被停用」",
-        f"{J}/ui/activities/CourseReminderScreen.kt",
+        F_REMSCREEN,
         [r"val missingCount = channelStates\.count \{ it == null \}"],
         [r"ch == null \|\| ch\.importance =="],
     ),
@@ -221,7 +231,7 @@ CHECKS = [
         # 真 bug（上游也有）：23:30–00:30 的晚自习，parseTimeToTodayMillis("00:30") 得到的是
         # **今天** 00:30，比开始时刻早 23 小时 → endMillis <= startMillis → 课中卡/岛永远不出现、
         # 只闪一条「已上课」（用户视角"上课提醒了却没有课中进度"）。
-        f"{J}/reminder/CourseReminderHelper.kt",
+        F_REMIND,
         [r"fun endMillisFor\(startMillis: Long, endTime: String\?\): Long"],
         [r"endMillis\s*=\s*parseTimeToTodayMillis\(", r"val parsedEnd = CourseReminderHelper\.parseTimeToTodayMillis\("],
     ),
@@ -229,7 +239,7 @@ CHECKS = [
         "备份必须覆盖除主设置外的其它用户设置文件（触感/材质/主题/课中提醒/更新源）",
         # 真实缺口：全仓 9 个 SharedPreferences，备份原先只覆盖 course_schedule_prefs 一个，
         # 于是这些文件里的用户设置换设备/重装后静默回到默认值。
-        f"{J}/data/CourseRepository.kt",
+        f"{J_CORE}/data/CourseRepository.kt",
         [
             r"private val BACKUP_EXTRA_PREFS = listOf\(",
             r'"app_preferences"', r'"app_theme_prefs"', r'"course_reminder_prefs"',
@@ -239,7 +249,7 @@ CHECKS = [
     ),
     (
         "跨文件还原必须走白名单（备份文件不能决定写哪个 SharedPreferences）",
-        f"{J}/data/CourseRepository.kt",
+        f"{J_CORE}/data/CourseRepository.kt",
         [r"if \(fileName !in BACKUP_EXTRA_PREFS \|\| originalKey\.isEmpty\(\)\) return"],
         [],
     ),
@@ -249,13 +259,13 @@ CHECKS = [
         # 被排到了我方 222 行之后 → 该函数永不闭合、后续成员全被套进它内部，
         # 编译期表现为一大批 Unresolved reference。括号总数检查不可靠（字符串模板/正则字面量
         # 会造成误报），所以这里针对该模式做定点守卫。
-        f"{J}/reminder/CourseReminderHelper.kt",
+        F_REMIND,
         [r"\}\.getOrDefault\(false\)\n    \}\n"],
         [],
     ),
     (
         "备份导出必须是黑名单式（白名单会漏掉所有不带前缀的用户设置）",
-        f"{J}/data/CourseRepository.kt",
+        f"{J_CORE}/data/CourseRepository.kt",
         [r"val excludedKeys = setOf\(KEY_DEFAULT_FOLDER_MIGRATED\)"],
         [r"val relevantKeys = listOf\("],
     ),

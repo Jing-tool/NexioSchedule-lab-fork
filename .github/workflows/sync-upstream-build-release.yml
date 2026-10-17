@@ -237,7 +237,11 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "本次构建：${FORK_VER}（versionCode=${FORK_CODE}，上游 ${VNAME}/${VC}）"
           chmod +x gradlew
-          ./gradlew :androidApp:assembleRelease --no-daemon
+          # ★ 先跑上游的 KMP 平台纯净度检查（commonMain/skikoMain 禁止 java./android. 等 JVM 专有 API）。
+          #   为什么必须放在这里：assembleRelease 只编 Android，**编不到 iOS**，
+          #   于是"Android 编得过、iOS 编不过"的写法在 CI 上永远看不见。
+          #   这个任务不依赖 Android SDK，几乎不额外花时间。
+          ./gradlew checkKmpPurity :androidApp:assembleRelease --no-daemon
 
       - name: 整理产物（AGP 已用 fork keystore 签好；上游若没有 signingConfig 则回退本地签名）
         if: github.event_name == 'workflow_dispatch' || steps.merge.outputs.merged == 'true'

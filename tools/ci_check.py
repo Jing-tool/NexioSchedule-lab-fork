@@ -337,9 +337,35 @@ CHECKS = [
 ]
 
 
+def preflight():
+    """门禁配置自检：路径常量指向的模块目录 / 文件必须存在。
+
+    上游一重构（app/ → androidApp + core + ui-shared），门禁里的路径就会**集体过期**，
+    而过期的表现是"文件不存在 → 该条不通过"，看上去像源码问题（本轮就踩过两条）。
+    单独先报一条，让"脚本过期"和"源码缺了这条"一眼可分。
+    """
+    problems = []
+    for mod in (J_APP, J_SHARED, J_CORE):
+        if not os.path.isdir(os.path.join(ROOT, mod)):
+            problems.append("模块目录不存在: %s" % mod)
+    for name, rel in sorted(globals().items()):
+        if name.startswith("F_") and isinstance(rel, str) and rel.endswith(".kt"):
+            if not os.path.exists(os.path.join(ROOT, rel)):
+                problems.append("%s → %s 不存在" % (name, rel))
+    return problems
+
+
 def main():
     failures = []
     print("── 源码不变量核对（%s）" % os.path.abspath(ROOT))
+    pf = preflight()
+    if pf:
+        failures.append((0, "门禁配置自检（路径常量）", pf))
+        print("  ✗ [00] 门禁配置自检（路径常量）—— 架构可能又变了，先修脚本路径")
+        for p in pf:
+            print("        %s" % p)
+    else:
+        print("  ✓ [00] 门禁配置自检（路径常量）")
     for idx, (desc, rel, must, must_not) in enumerate(CHECKS, 1):
         problems = []
         if rel is None:

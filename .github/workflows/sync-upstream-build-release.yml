@@ -250,19 +250,23 @@ jobs:
           mkdir -p androidApp/build/outputs/final
           APK_NAME="Nexio.v${{ steps.build.outputs.FORK_VER }}.apk"
           OUT="androidApp/build/outputs/final/$APK_NAME"
-          SRC="androidApp/build/outputs/apk/release/app-release.apk"
-          if [ -f "$SRC" ]; then
-            echo "✅ 构建期已签名（上游 signingConfigs.release + 本 fork 的 keystore）"
-          else
-            SRC="androidApp/build/outputs/apk/release/app-release-unsigned.apk"
-            echo "::warning::上游没有 release signingConfig —— 回退到本地 zipalign + apksigner"
-            "$BT/zipalign" -f 4 "$SRC" androidApp/build/outputs/final/aligned.apk
-            "$BT/apksigner" sign --ks signing/fork.jks --ks-key-alias "$KEY_ALIAS" \
-              --ks-pass env:KS_PASS --key-pass env:KEY_PASS \
-              --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true \
-              --out "$OUT" androidApp/build/outputs/final/aligned.apk
-            SRC="$OUT"
-          fi
+          # KMP 重构后 androidApp 的产物名不再保证是 app-release[-unsigned].apk：
+          # 按目录 find，再按文件名判断是否已签名（别猜名字）。
+          SRC=$(find androidApp/build/outputs/apk/release -name "*.apk" -print -quit 2>/dev/null || true)
+          [ -n "$SRC" ] || { echo "::error::没有找到 release APK"; ls -R androidApp/build/outputs/apk || true; exit 1; }
+          echo "APK: $SRC"
+          case "$SRC" in
+            *-unsigned.apk)
+              echo "::warning::上游没有 release signingConfig —— 回退到本地 zipalign + apksigner"
+              "$BT/zipalign" -f 4 "$SRC" androidApp/build/outputs/final/aligned.apk
+              "$BT/apksigner" sign --ks signing/fork.jks --ks-key-alias "$KEY_ALIAS" \
+                --ks-pass env:KS_PASS --key-pass env:KEY_PASS \
+                --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true \
+                --out "$OUT" androidApp/build/outputs/final/aligned.apk
+              SRC="$OUT"
+              ;;
+            *) echo "✅ 构建期已签名（上游 signingConfigs.release + 本 fork 的 keystore）" ;;
+          esac
           # ★ 只做对齐检查，绝不 zipalign 已签名的包（签完再对齐会破坏 v2/v3 签名）
           "$BT/zipalign" -c 4 "$SRC" || echo "::warning::zipalign -c 未通过（AGP/上游产物默认已对齐，仅提示）"
           "$BT/apksigner" verify --print-certs "$SRC" | head -6
@@ -300,8 +304,11 @@ jobs:
           mkdir -p signing androidApp/build/outputs/final
           printf '%s' "$WKS_B64" | base64 -d > signing/wear.jks
           chmod 600 signing/wear.jks
-          SRC="androidApp/build/outputs/apk/release/app-release.apk"
-          [ -f "$SRC" ] || SRC="androidApp/build/outputs/apk/release/app-release-unsigned.apk"
+          # KMP 重构后 androidApp 的产物名不再保证是 app-release[-unsigned].apk，
+          # 所以按目录找，别猜文件名（之前就是猜错名字，zipalign 报 No such file）。
+          SRC=$(find androidApp/build/outputs/apk/release -name "*.apk" -print -quit 2>/dev/null || true)
+          [ -n "$SRC" ] || { echo "::error::没有找到 release APK"; ls -R androidApp/build/outputs/apk || true; exit 1; }
+          echo "wear 变体基于：$SRC"
           WEAR="androidApp/build/outputs/final/Nexio.v${{ steps.build.outputs.FORK_VER }}-wear.apk"
           "$BT/zipalign" -f 4 "$SRC" androidApp/build/outputs/final/wear-aligned.apk
           "$BT/apksigner" sign --ks signing/wear.jks --ks-key-alias "$WKEY_ALIAS" \

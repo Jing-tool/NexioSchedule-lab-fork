@@ -42,6 +42,7 @@ F_APPSHELL = f"{J_SHARED}/ui/activities/CourseScheduleApp.kt"
 F_MAINSCHED = f"{J_SHARED}/ui/screens/MainScheduleScreen.kt"
 F_SETTINGS = f"{J_SHARED}/ui/screens/SettingsScreen.kt"
 F_REMSCREEN = f"{J_SHARED}/ui/activities/CourseReminderScreen.kt"
+F_REMCONTROLLER = f"{J_CORE}/data/ReminderController.kt"
 F_UPDCHECK = f"{J_APP}/ui/utils/UpdateChecker.kt"
 F_UPDINST = f"{J_APP}/ui/utils/UpdateInstaller.kt"
 WF_REL = ".github/workflows/sync-upstream-build-release.yml"
@@ -136,14 +137,17 @@ CHECKS = [
     ),
     (
         "岛 B 区（课前/课中）模式判定只有一处真源",
-        F_ISLAND,
+        # 判定必须放 :core 的 ReminderController（纯逻辑、可被设置页与 androidApp 同时调用）。
+        # 以前钉在 androidApp 的 IslandNotificationHelper 上，但 ui-shared 无法引用那个模块
+        # （依赖方向 androidApp→ui-shared 单向），设置页就只能各写一套 —— 正是出 bug 的写法。
+        F_REMCONTROLLER,
         [r"fun effectiveInClassRightMode\("],
         [],
     ),
     (
         "岛 B 区判定被设置页复用（不要裸读 prefs 各写一套）",
         F_REMSCREEN,
-        [r"IslandNotificationHelper\.effectiveInClassRightMode\("],
+        [r"effectiveInClassRightMode\("],
         [],
     ),
     (
@@ -154,7 +158,9 @@ CHECKS = [
     ),
     (
         "节的 Y 坐标单一真源：落点判定优先用渲染实际用的 sectionTopDp",
-        F_MAINACT,
+        # 上游 1.6.5 起几何在共享 UI 层（androidApp 的 MainActivity 只剩宿主逻辑），
+        # 所以这一条要看 CourseScheduleApp.kt，不是 MainActivity.kt。
+        F_APPSHELL,
         [r"geom\.sectionTopDp\[section\]"],
         [],
     ),

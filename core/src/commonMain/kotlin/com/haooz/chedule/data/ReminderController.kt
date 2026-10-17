@@ -59,6 +59,20 @@ interface ReminderController {
      */
     fun supportsLiveActivity(): Boolean = false
 
+    /**
+     * 超级岛缩略态 B 区（课前 / 课中右侧那一块）该用哪个模式。
+     *
+     * 课前与课中是**同一块区域**，但历史上是两个独立下拉、课中那个默认是静态「正在上课」，
+     * 于是"课前在跳秒、上课后变静态文案"被用户读成"下课倒计时飞了"。
+     * 规则：用户显式选过就听用户的；没设过（-1）跟随课前 B 区。
+     *
+     * ★ 判定**只此一处**：设置页（ui-shared）与 androidApp 的 IslandNotificationHelper 都调它，
+     *   谁也别再裸读 prefs 各写一套 —— 这两边过去各写一套正是那个 bug 的根因。
+     * 默认实现即完整语义，平台侧不需要重写。
+     */
+    fun effectiveInClassRightMode(preClassMode: Int, inClassMode: Int): Int =
+        if (inClassMode >= 0) inClassMode else preClassMode
+
     /** Shizuku 服务是否在运行 */
     fun isShizukuRunning(): Boolean
 

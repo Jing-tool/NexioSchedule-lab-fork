@@ -243,6 +243,23 @@ class CourseRepository private constructor() : PeriodTimeSource {
         private const val KEY_SHIFT_SELECTED_SCHEDULES = "shift_selected_schedules"
         private const val KEY_DEFAULT_HOMEPAGE = "default_homepage"
         private const val KEY_WIDGET_PADDING_MODE = "widget_padding_mode"
+
+        // ── 本 fork 定制：实时动态样式 + 假期余额 + 返校准备清单（上游没有这几个开关）──
+        /** 实时动态是否用 API 36 的 ProgressStyle（部分机型该分支不激活、会落成普通通知，可关掉降级） */
+        private const val KEY_LIVE_PROGRESS_STYLE = "live_progress_style"
+        /** 假期余额：假期中每天一条普通通知（默认开，可单独关/改时间/只在最后 N 天发） */
+        private const val KEY_RETURN_DAY_BALANCE_ENABLED = "return_day_balance_enabled"
+        private const val KEY_RETURN_DAY_BALANCE_HOUR = "return_day_balance_hour"
+        private const val KEY_RETURN_DAY_BALANCE_MINUTE = "return_day_balance_minute"
+        /** 「只在假期最后 N 天开始提醒」；0 = 假期期间每天都提醒 */
+        private const val KEY_RETURN_DAY_BALANCE_LEAD_DAYS = "return_day_balance_lead_days"
+        /** 返校准备清单：返校日到点推一条普通通知（默认关，文案可自定义） */
+        private const val KEY_RETURN_DAY_PREP_ENABLED = "return_day_prep_enabled"
+        private const val KEY_RETURN_DAY_PREP_HOUR = "return_day_prep_hour"
+        private const val KEY_RETURN_DAY_PREP_MINUTE = "return_day_prep_minute"
+        private const val KEY_RETURN_DAY_PREP_TEXT = "return_day_prep_text"
+        const val DEFAULT_RETURN_DAY_PREP_TEXT = "作业 / 校服 / 充电器 / 饭卡 / 雨伞"
+
         private const val SCHEDULE_KEY_PREFIX = "schedule_"
         private const val KEY_TIME_CONFIG_IDS = "time_config_ids"
         private const val KEY_CURRENT_TIME_CONFIG_ID = "current_time_config_id"
@@ -1123,6 +1140,82 @@ class CourseRepository private constructor() : PeriodTimeSource {
 
     fun setNextDayReminderMinute(minute: Int) {
         prefs.edit { putInt(KEY_NEXT_DAY_REMINDER_MINUTE, minute) }
+    }
+
+    // ── 本 fork 定制：实时动态样式 ────────────────────────────────────────────
+    /**
+     * 实时动态是否使用 API 36 的 ProgressStyle（带 tracker 图标的进度组件）。
+     * 默认开；部分机型（如 HyperOS）该分支不激活、会落成普通通知，此时可关掉降级。
+     */
+    fun getLiveProgressStyle(): Boolean = prefs.getBoolean(KEY_LIVE_PROGRESS_STYLE, true)
+
+    fun setLiveProgressStyle(enabled: Boolean) {
+        prefs.edit { putBoolean(KEY_LIVE_PROGRESS_STYLE, enabled) }
+    }
+
+    // ── 本 fork 定制：假期余额 / 返校准备清单 ────────────────────────────────
+    // 这些设置**不带 schedule_/time_config_ 前缀**，只有全量备份的黑名单式导出才带得走
+    // （见 exportAllPreferences 的注释）。
+
+    /** 假期余额：假期中每天一条普通通知（默认开） */
+    fun getReturnDayBalanceEnabled(): Boolean =
+        prefs.getBoolean(KEY_RETURN_DAY_BALANCE_ENABLED, true)
+
+    fun setReturnDayBalanceEnabled(enabled: Boolean) {
+        prefs.edit { putBoolean(KEY_RETURN_DAY_BALANCE_ENABLED, enabled) }
+    }
+
+    fun getReturnDayBalanceHour(): Int = safeGetInt(KEY_RETURN_DAY_BALANCE_HOUR, 9)
+
+    fun setReturnDayBalanceHour(hour: Int) {
+        prefs.edit { putInt(KEY_RETURN_DAY_BALANCE_HOUR, hour.coerceIn(0, 23)) }
+    }
+
+    fun getReturnDayBalanceMinute(): Int = safeGetInt(KEY_RETURN_DAY_BALANCE_MINUTE, 0)
+
+    fun setReturnDayBalanceMinute(minute: Int) {
+        prefs.edit { putInt(KEY_RETURN_DAY_BALANCE_MINUTE, minute.coerceIn(0, 59)) }
+    }
+
+    /**
+     * 「只在假期最后 N 天开始提醒」。0（默认）= 假期期间每天都提醒。
+     * 语义：剩余天数 < N 才发 —— N=2 表示只提醒最后两天（含最后一天）。
+     */
+    fun getReturnDayBalanceLeadDays(): Int =
+        safeGetInt(KEY_RETURN_DAY_BALANCE_LEAD_DAYS, 0).coerceIn(0, 7)
+
+    fun setReturnDayBalanceLeadDays(days: Int) {
+        prefs.edit { putInt(KEY_RETURN_DAY_BALANCE_LEAD_DAYS, days.coerceIn(0, 7)) }
+    }
+
+    /** 返校准备清单（默认关，文案可自定义） */
+    fun getReturnDayPrepEnabled(): Boolean =
+        prefs.getBoolean(KEY_RETURN_DAY_PREP_ENABLED, false)
+
+    fun setReturnDayPrepEnabled(enabled: Boolean) {
+        prefs.edit { putBoolean(KEY_RETURN_DAY_PREP_ENABLED, enabled) }
+    }
+
+    fun getReturnDayPrepHour(): Int = safeGetInt(KEY_RETURN_DAY_PREP_HOUR, 12)
+
+    fun setReturnDayPrepHour(hour: Int) {
+        prefs.edit { putInt(KEY_RETURN_DAY_PREP_HOUR, hour.coerceIn(0, 23)) }
+    }
+
+    fun getReturnDayPrepMinute(): Int = safeGetInt(KEY_RETURN_DAY_PREP_MINUTE, 0)
+
+    fun setReturnDayPrepMinute(minute: Int) {
+        prefs.edit { putInt(KEY_RETURN_DAY_PREP_MINUTE, minute.coerceIn(0, 59)) }
+    }
+
+    fun getReturnDayPrepText(): String =
+        prefs.getString(KEY_RETURN_DAY_PREP_TEXT, DEFAULT_RETURN_DAY_PREP_TEXT)
+            .takeIf { it.isNotBlank() } ?: DEFAULT_RETURN_DAY_PREP_TEXT
+
+    fun setReturnDayPrepText(text: String) {
+        prefs.edit {
+            putString(KEY_RETURN_DAY_PREP_TEXT, text.trim().ifBlank { DEFAULT_RETURN_DAY_PREP_TEXT })
+        }
     }
 
     /** 获取今日课程/课程提醒标准版小组件的 padding 档位（0=标准, 1=4×6, 2=4×7, 3=4×6无字, 4=4×7无字） */

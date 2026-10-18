@@ -66,6 +66,7 @@ import com.haooz.chedule.ui.utils.TransitionLayerSnapshot
 import com.haooz.chedule.ui.utils.blockTouchPassThrough
 import com.haooz.chedule.ui.utils.isAppDarkTheme
 import com.haooz.chedule.ui.utils.PredictiveBackSettings
+import com.haooz.chedule.ui.utils.hostStatusBarHeight
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import com.haooz.chedule.ui.utils.ScreenCornerRadiiPx
@@ -412,6 +413,7 @@ fun CourseDetailScreen(
                     topBar = {
                         ProgressiveBlurTopBar(
                             backdrop = liquidGlassBackdrop,
+                            statusBarHeightOverride = hostStatusBarHeight(),
                         ) {
                             CollapsibleTopAppBar(
                                 title = courseName,
@@ -527,7 +529,7 @@ fun CourseDetailScreen(
                                         var best = -1
                                         var bestDiff = Int.MAX_VALUE
                                         weekGroups.forEachIndexed { i, (week, _) ->
-                                            val diff = kotlin.math.abs(week - targetWeek)
+                                            val diff = abs(week - targetWeek)
                                             if (diff < bestDiff) {
                                                 bestDiff = diff
                                                 best = i

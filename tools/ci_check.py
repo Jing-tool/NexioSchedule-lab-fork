@@ -30,16 +30,17 @@ J_SHARED = "ui-shared/src/commonMain/kotlin/com/haooz/chedule"    # 共享 Compo
 J_CORE = "core/src/commonMain/kotlin/com/haooz/chedule"           # 跨平台数据层
 
 F_GLASS_PERF = f"{J_SHARED}/ui/utils/GlassPerf.kt"
-F_CARD = f"{J_SHARED}/ui/components/CourseCard.kt"
-F_DAYCOL = f"{J_SHARED}/ui/components/DayColumn.kt"
-F_TODAY = f"{J_SHARED}/ui/screens/TodayScreen.kt"
+F_CARD = f"{J_SHARED}/ui/activities/classschedule/CourseCard.kt"
+F_DAYCOL = f"{J_SHARED}/ui/activities/classschedule/DayColumn.kt"
+F_TODAY = f"{J_SHARED}/ui/activities/today/TodayScreen.kt"
 F_ISLAND = f"{J_APP}/reminder/IslandNotificationHelper.kt"
 F_REMIND = f"{J_APP}/reminder/CourseReminderHelper.kt"
 F_ALARM = f"{J_APP}/reminder/AlarmReceiver.kt"
 F_SCEN = f"{J_APP}/reminder/ReminderTestScenario.kt"
 F_MAINACT = f"{J_APP}/ui/activities/MainActivity.kt"
-F_APPSHELL = f"{J_SHARED}/ui/activities/CourseScheduleApp.kt"
-F_MAINSCHED = f"{J_SHARED}/ui/screens/MainScheduleScreen.kt"
+F_APPSHELL = f"{J_SHARED}/ui/activities/main/CourseScheduleApp.kt"
+F_APPSHELL_STATE = f"{J_SHARED}/ui/activities/main/CourseScheduleAppState.kt"
+F_MAINSCHED = f"{J_SHARED}/ui/activities/classschedule/MainScheduleScreen.kt"
 F_SETTINGS = f"{J_SHARED}/ui/screens/SettingsScreen.kt"
 F_REMSCREEN = f"{J_SHARED}/ui/activities/CourseReminderScreen.kt"
 F_REMCONTROLLER = f"{J_CORE}/data/ReminderController.kt"
@@ -158,10 +159,10 @@ CHECKS = [
     ),
     (
         "节的 Y 坐标单一真源：落点判定优先用渲染实际用的 sectionTopDp",
-        # 上游 1.6.5 起几何在共享 UI 层（androidApp 的 MainActivity 只剩宿主逻辑），
-        # 所以这一条要看 CourseScheduleApp.kt，不是 MainActivity.kt。
-        F_APPSHELL,
-        [r"geom\.sectionTopDp\[section\]"],
+        # 上游又把主界面壳拆成了 activities/main/ 一组文件：落点判定（computeDropTarget）
+        # 现在在 CourseScheduleAppState.kt。循环变量上游用 s，这里两种都收。
+        F_APPSHELL_STATE,
+        [r"geom\.sectionTopDp\[(section|s)\]"],
         [],
     ),
     (

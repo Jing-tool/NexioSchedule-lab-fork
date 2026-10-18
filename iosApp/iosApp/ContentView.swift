@@ -562,8 +562,12 @@ private final class AppHostController: UIViewController {
         if target.transform != transform { target.transform = transform }
     }
 
-    /// 开洞（课表外观）时把原生 chrome（底栏容器 + 导航栏）跟着主内容一起移动缩小。
+    /// 开洞（课表外观）时把原生 chrome（tab bar + 导航栏）跟着主内容一起移动缩小。
     /// 两者都不在 Compose 的缩放层里，得自己施加同一套变换（scale + 洞心原点）。
+    ///
+    /// ⚠ 不能直接缩 `chromeContainer`：容器带非单位 transform 后 UIKit 会重新解析
+    /// `verticalBarEdge`，折叠屏 iPhone 的侧边竖排 tab bar 会从 (397,0,69,678) 掉回底部
+    /// (0,595,466,83)。所以只能逐个缩「真正的 chrome 视图」，且每个都必须单独确认，见下。
     private func updateCutoutTransform() {
         let screenW = view.bounds.width
         let screenH = view.bounds.height
@@ -573,7 +577,11 @@ private final class AppHostController: UIViewController {
         let pivot = CGPoint(x: screenW * 0.5, y: screenH * CGFloat(host.cutoutCenterYRatio))
         // 外观页里打开底部弹窗时，Compose 主内容整体上移让位；原生 chrome（底栏 + 导航栏）
         let sheetOffsetY = cachedChromeOffsetY
-        applyCutoutScale(scale, extraTranslationY: sheetOffsetY, to: chromeContainer, pivot: pivot)
+        // 竖排 tab bar 本体。`chromeController.view` 子树里若有 SwiftUI 托管的
+        // `FloatingBarHostingView`（其他 iOS 版本/布局下图标在那里）优先缩它，否则缩 `UITabBar`。
+        let barHost = findView(chromeController.view, className: "FloatingBarHostingView")
+            ?? chromeController.tabBar
+        applyCutoutScale(scale, extraTranslationY: sheetOffsetY, to: barHost, pivot: pivot)
         if let bar = navigationController?.navigationBar {
             applyCutoutScale(
                 scale,
@@ -582,10 +590,34 @@ private final class AppHostController: UIViewController {
                 pivot: pivot
             )
         }
+        // 折叠屏竖排模式：顶栏的「更多 / 切换课表」不在 `UINavigationBar`（它高度为 0），
+        // 而被 UIKit 挪进导航控制器的 `_UIFloatingBarContainerView` →
+        // `FloatingBarHostingView<FloatingBarContainer>`（与 chromeController.view 是兄弟）。
+        //
+        // ⚠ 这一层缩不动：只要祖先带缩放，它就按 1/scale 反向撑大自己的 bounds
+        // （实测 scale 0.75 → bounds 621×904），内容视觉尺寸恒不变，只会错位（偏上）。
+        // UIView.transform / layer.transform / anchorPoint / sublayerTransform / 逐个缩子视图
+        // 全都试过，结果不是偏上就是图标与玻璃分离。开洞期间直接淡出：
+        // 这一页的头部本来就由 Compose 的「取消 / 应用」承担。
+        if let navView = navigationController?.view,
+           let floatingBar = findView(navView, className: "_UIFloatingBarContainerView"),
+           let host = findView(floatingBar, className: "FloatingBarHostingView") {
+            let fade = max(0, min(1, (scale - 0.72) / 0.28))
+            if abs(host.alpha - fade) > 0.01 { host.alpha = fade }
+        }
     }
 
     /// 外观页弹窗让位时主内容的纵向位移（pt，负值=上移；0 = 当前无位移）
     private var cachedChromeOffsetY: CGFloat = 0
+
+    private func findView(_ root: UIView, className: String, _ depth: Int = 0) -> UIView? {
+        if depth > 6 { return nil }
+        if String(describing: type(of: root)).hasPrefix(className) { return root }
+        for sub in root.subviews {
+            if let hit = findView(sub, className: className, depth + 1) { return hit }
+        }
+        return nil
+    }
 
     private func applyPushedChromeOffset(_ offsetY: KotlinDouble) {
         cachedChromeOffsetY = CGFloat(offsetY.doubleValue)
@@ -610,6 +642,11 @@ private final class AppHostController: UIViewController {
         let showHeader = host.showsNativeHeader || host.scheduleLibraryActive ||
             host.keepsNativeHeaderDuringCutout
         let inset = showHeader ? max(0, view.safeAreaInsets.top - window.safeAreaInsets.top) : 0
+        // 真实状态栏高度（window 的安全区顶部）。折叠屏 iPhone 折叠态状态栏跑到右侧，
+        // 顶部为 0 —— Compose 的 `WindowInsets.statusBars` 在 iOS 上读到的是
+        // `view.safeAreaInsets.top`（含导航栏），判断不出「顶部到底有没有状态栏」，
+        // 所以顶栏糊带高度必须由这里显式喂进去。
+        host.updateStatusBarHeight(points: Double(window.safeAreaInsets.top))
         guard abs(lastTopInset - inset) > 0.5 else { return }
         lastTopInset = inset
         host.updateTopBarInset(points: Double(inset))

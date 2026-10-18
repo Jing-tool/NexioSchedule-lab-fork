@@ -1,4 +1,4 @@
-package com.haooz.chedule.ui.components
+package com.haooz.chedule.ui.activities.classschedule
 
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -10,7 +10,6 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -35,19 +34,28 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.drawOutline
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.haooz.chedule.data.CardContentAlignment
+import com.haooz.chedule.data.CardRefractionLevel
+import com.haooz.chedule.data.CardTextColor
 import com.haooz.chedule.data.Course
 import com.haooz.chedule.ui.theme.rememberCourseColors
 import com.haooz.chedule.ui.theme.readableCourseTextColor
@@ -56,6 +64,8 @@ import com.haooz.chedule.data.rgbToHsv
 import com.haooz.chedule.ui.utils.glassPerfFactor
 import com.haooz.chedule.ui.utils.isAppDarkTheme
 import com.kyant.backdrop.Backdrop
+import com.kyant.backdrop.BackdropEffectScope
+import com.kyant.backdrop.LocalBackdropViewport
 import com.kyant.backdrop.backdrops.SharedBlurBackdrop
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
@@ -76,11 +86,6 @@ data class LandRippleSpec(
 )
 
 val LocalLandRipple = compositionLocalOf { LandRippleSpec() }
-
-// 按压：快速收一下，轻触也能立刻看到反馈；松手：带一点回弹，避免生硬
-private const val SINK_SCALE = 0.94f
-private val SinkPressSpec = tween<Float>(durationMillis = 90, easing = FastOutSlowInEasing)
-private val SinkReleaseSpec = spring<Float>(dampingRatio = 0.5f, stiffness = 480f)
 
 @Composable
 fun CourseCard(
@@ -109,17 +114,25 @@ fun CourseCard(
     customCardHeightDp: Float? = null,
     cardCornerRadius: Float = 10f,
     isTablet: Boolean = false,
-    cardContentAlignment: com.haooz.chedule.data.CardContentAlignment = com.haooz.chedule.data.CardContentAlignment.CENTER_CENTER,
-    cardTextColor: com.haooz.chedule.data.CardTextColor = com.haooz.chedule.data.CardTextColor.COLORFUL,
+    cardContentAlignment: CardContentAlignment = CardContentAlignment.CENTER_CENTER,
+    cardTextColor: CardTextColor = CardTextColor.COLORFUL,
     cardTextScale: Float = 1f,
     showClassroom: Boolean = true,
     showTeacher: Boolean = true,
-    cardRefraction: com.haooz.chedule.data.CardRefractionLevel = com.haooz.chedule.data.CardRefractionLevel.DEFAULT,
+    cardRefraction: CardRefractionLevel = CardRefractionLevel.DEFAULT,
     isDragging: Boolean = false,
+    /**
+     * 长按后是否允许接着拖动（调课）。
+     *
+     * ⚠ 自定义时间课传 false：它按时间轴定位、不存在「挪到第几节」的目标，
+     * 拖出去也无处可放（还会顺带把「复制」带出来，而复制同样依赖节次跨度）。
+     * 这类课长按只做一件事：弹「编辑 / 删除」菜单。
+     */
+    dragEnabled: Boolean = true,
     disablePadding: Boolean = false,
     isDark: Boolean = isAppDarkTheme(),
     // 非 state：滑动中坐标每帧变，跳过 localToRoot；读取不触发重组
-    touchState: com.haooz.chedule.ui.screens.ScheduleTouchState? = null,
+    touchState: ScheduleTouchState? = null,
     onClick: () -> Unit,
     onLongPressStart: (cardLeft: Float, cardTop: Float, width: Float, height: Float) -> Unit = { _, _, _, _ -> },
     onDragStart: () -> Unit = {},
@@ -195,8 +208,16 @@ fun CourseCard(
     val effectiveAlpha = (if (hasBlur) cardAlpha * 1.6f else cardAlpha).coerceIn(0f, 1f)
     val courseColors = rememberCourseColors(course, isDark)
     val useMonet = MiuixTheme.isDynamicColor
-    val inactiveColor = if (useMonet) MiuixTheme.colorScheme.onSurfaceVariantActions else Color(0xFF9E9E9E)
-    val cardColor = remember(courseColors.tint, inactiveColor, isCurrentWeek, isHoliday, isCourseCancelled, effectiveAlpha) {
+    val inactiveColor =
+        if (useMonet) MiuixTheme.colorScheme.onSurfaceVariantActions else Color(0xFF9E9E9E)
+    val cardColor = remember(
+        courseColors.tint,
+        inactiveColor,
+        isCurrentWeek,
+        isHoliday,
+        isCourseCancelled,
+        effectiveAlpha
+    ) {
         if (isCurrentWeek && !isHoliday && !isCourseCancelled) {
             courseColors.tint.copy(alpha = effectiveAlpha)
         } else {
@@ -204,14 +225,15 @@ fun CourseCard(
         }
     }
     val themeBackground = MiuixTheme.colorScheme.background
-    val monetCardBackground = remember(cardColor, solidBackingColor, themeBackground, hasBlur, cardSurfaceAlpha, isDark) {
-        val backing = solidBackingColor?.compositeOver(themeBackground) ?: themeBackground
-        val surface = cardColor.compositeOver(backing)
-        if (hasBlur) {
-            (if (isDark) Color.Black else Color.White)
-                .copy(alpha = cardSurfaceAlpha.coerceIn(0f, 1f)).compositeOver(surface)
-        } else surface
-    }
+    val monetCardBackground =
+        remember(cardColor, solidBackingColor, themeBackground, hasBlur, cardSurfaceAlpha, isDark) {
+            val backing = solidBackingColor?.compositeOver(themeBackground) ?: themeBackground
+            val surface = cardColor.compositeOver(backing)
+            if (hasBlur) {
+                (if (isDark) Color.Black else Color.White)
+                    .copy(alpha = cardSurfaceAlpha.coerceIn(0f, 1f)).compositeOver(surface)
+            } else surface
+        }
     val textColor = remember(
         courseColors,
         useMonet,
@@ -226,7 +248,7 @@ fun CourseCard(
     ) {
         // 纯色模式仅本周课：黑白 0.74f；非本周/假期沿用灰色
         if (isCurrentWeek && !isHoliday && !isCourseCancelled &&
-            cardTextColor == com.haooz.chedule.data.CardTextColor.SOLID
+            cardTextColor == CardTextColor.SOLID
         ) {
             if (isDark) Color.White.copy(alpha = 0.74f) else Color.Black.copy(alpha = 0.74f)
         } else if (isCurrentWeek && !isHoliday && !isCourseCancelled) {
@@ -234,7 +256,12 @@ fun CourseCard(
             else if (hasBlur) courseColors.tint.let { c ->
                 val hsv = FloatArray(3)
                 // AOSP Color.RGBToHSV/HSVToColor 的跨平台移植（:core 的纯数学版，golden vectors 锁定）
-                rgbToHsv((c.red * 255).toInt(), (c.green * 255).toInt(), (c.blue * 255).toInt(), hsv)
+                rgbToHsv(
+                    (c.red * 255).toInt(),
+                    (c.green * 255).toInt(),
+                    (c.blue * 255).toInt(),
+                    hsv
+                )
                 if (isDark) {
                     hsv[1] = (hsv[1] * 0.5f).coerceIn(0f, 1f)
                     hsv[2] = (hsv[2] + 0.4f).coerceIn(0f, 1f)
@@ -258,10 +285,14 @@ fun CourseCard(
 
     if (hasBlur) {
         key(effectiveCornerRadius) {
-            val backdropShape = remember(effectiveCornerRadius) { ContinuousRoundedRectangle(effectiveCornerRadius.dp) }
-            val blurPx = with(localDensity) { remember(cardBlurRadius) { cardBlurRadius.dp.toPx() } }
-            val lensRadiusPx = with(localDensity) { remember(cardRefraction) { cardRefraction.lensRadiusDp.dp.toPx() } }
-            val lensStrengthPx = with(localDensity) { remember(cardRefraction) { cardRefraction.lensStrengthDp.dp.toPx() } }
+            val backdropShape =
+                remember(effectiveCornerRadius) { ContinuousRoundedRectangle(effectiveCornerRadius.dp) }
+            val blurPx =
+                with(localDensity) { remember(cardBlurRadius) { cardBlurRadius.dp.toPx() } }
+            val lensRadiusPx =
+                with(localDensity) { remember(cardRefraction) { cardRefraction.lensRadiusDp.dp.toPx() } }
+            val lensStrengthPx =
+                with(localDensity) { remember(cardRefraction) { cardRefraction.lensStrengthDp.dp.toPx() } }
             // 白/黑底由「卡片不透明度」控制；课程色由「卡片着色程度」控制
             val overlayColor = remember(isDark, cardSurfaceAlpha) {
                 if (isDark) Color.Black.copy(alpha = cardSurfaceAlpha.coerceIn(0f, 1f))
@@ -270,7 +301,7 @@ fun CourseCard(
             // backdrop 是 SharedBlurBackdrop 时，它的 drawBackdrop 画的是**已烘焙好的
             // 模糊壁纸层**，卡片不用再 blur —— 那正是「模糊 0 开销」的那一半。
             val isSharedBlur = wallpaperBackdrop is SharedBlurBackdrop
-            val backdropEffects: com.kyant.backdrop.BackdropEffectScope.() -> Unit =
+            val backdropEffects: BackdropEffectScope.() -> Unit =
                 remember(isSharedBlur, blurPx, lensRadiusPx, lensStrengthPx, cardRefraction) {
                     {
                         // 滑动/翻页进行中降级：blur + lens 是课表页最贵的两笔
@@ -298,13 +329,13 @@ fun CourseCard(
                 flattenStackedFills(overlayColor, cardColor)
             }
             // onDrawSurface 每次重组新建会令 drawBackdrop 判不等，每次重录壁纸层并重跑 GPU 模糊
-            val onCardSurface: androidx.compose.ui.graphics.drawscope.DrawScope.() -> Unit =
+            val onCardSurface: DrawScope.() -> Unit =
                 remember(surfaceColor) {
                     { drawRect(surfaceColor) }
                 }
             val outlineColor = remember(cardColor) { cardColor.copy(alpha = 0.05f) }
             val outlineStroke = remember(localDensity) {
-                androidx.compose.ui.graphics.drawscope.Stroke(with(localDensity) { 2.dp.toPx() })
+                Stroke(with(localDensity) { 2.dp.toPx() })
             }
             val outlineCache = remember { OutlineCache() }
             // 静止卡不挂 graphicsLayer：几十张×两页的合成层是周滑 draw 热点
@@ -314,7 +345,12 @@ fun CourseCard(
                 modifier = modifier
                     .fillMaxWidth()
                     .height(cardHeight)
-                    .then(if (disablePadding) Modifier else Modifier.padding(horizontal = 2.dp, vertical = 2.dp))
+                    .then(
+                        if (disablePadding) Modifier else Modifier.padding(
+                            horizontal = 2.dp,
+                            vertical = 2.dp
+                        )
+                    )
                     .then(
                         if (needTransformLayer) {
                             Modifier.graphicsLayer {
@@ -330,7 +366,12 @@ fun CourseCard(
                     .onGloballyPositioned { coordinates ->
                         cardCoords[0] = coordinates
                         if (touchState?.scrolling == true) return@onGloballyPositioned
-                        val center = coordinates.localToRoot(Offset(coordinates.size.width / 2f, coordinates.size.height / 2f))
+                        val center = coordinates.localToRoot(
+                            Offset(
+                                coordinates.size.width / 2f,
+                                coordinates.size.height / 2f
+                            )
+                        )
                         cardBoundsPx[0] = center.x
                         cardBoundsPx[1] = center.y
                         cardBoundsPx[2] = coordinates.size.width.toFloat()
@@ -350,7 +391,7 @@ fun CourseCard(
                         effects = backdropEffects,
                         highlight = null,
                         shadow = null,
-                        viewport = com.kyant.backdrop.LocalBackdropViewport.current,
+                        viewport = LocalBackdropViewport.current,
                         onDrawSurface = onCardSurface
                     )
                     .drawWithContent {
@@ -380,6 +421,7 @@ fun CourseCard(
                         bounds = cardBoundsPx,
                         refreshBounds = refreshCardBounds,
                         scope = scope,
+                        dragEnabled = dragEnabled,
                         onSinkChange = { sinkPressed = it },
                         onLongPressStart = onLongPressStart,
                         onClick = onClick,
@@ -390,10 +432,25 @@ fun CourseCard(
                     ),
                 contentAlignment = Alignment.Center
             ) {
-                CardContent(course, sectionCount, textColor, hasMultipleCourses,
-                    isTablet, cardContentAlignment, cardHeight.value, cardHeightPerSection,
-                    isHoliday, isWorkSwap, isCurrentWeek, showClassroom, showTeacher, cardTextScale, isDark,
-                    isCourseCancelled, courseTint = courseColors.tint)
+                CardContent(
+                    course,
+                    sectionCount,
+                    textColor,
+                    hasMultipleCourses,
+                    isTablet,
+                    cardContentAlignment,
+                    cardHeight.value,
+                    cardHeightPerSection,
+                    isHoliday,
+                    isWorkSwap,
+                    isCurrentWeek,
+                    showClassroom,
+                    showTeacher,
+                    cardTextScale,
+                    isDark,
+                    isCourseCancelled,
+                    courseTint = courseColors.tint
+                )
             }
         }
     } else {
@@ -407,7 +464,12 @@ fun CourseCard(
             modifier = modifier
                 .fillMaxWidth()
                 .height(cardHeight)
-                .then(if (disablePadding) Modifier else Modifier.padding(horizontal = 2.dp, vertical = 2.dp))
+                .then(
+                    if (disablePadding) Modifier else Modifier.padding(
+                        horizontal = 2.dp,
+                        vertical = 2.dp
+                    )
+                )
                 .then(
                     if (needTransformLayer) {
                         Modifier.graphicsLayer {
@@ -432,7 +494,12 @@ fun CourseCard(
                     // 与 hasBlur 分支一致：滑动中跳过 localToRoot，避免几十张卡每帧算坐标
                     cardCoords[0] = coordinates
                     if (touchState?.scrolling == true) return@onGloballyPositioned
-                    val center = coordinates.localToRoot(Offset(coordinates.size.width / 2f, coordinates.size.height / 2f))
+                    val center = coordinates.localToRoot(
+                        Offset(
+                            coordinates.size.width / 2f,
+                            coordinates.size.height / 2f
+                        )
+                    )
                     cardBoundsPx[0] = center.x
                     cardBoundsPx[1] = center.y
                     cardBoundsPx[2] = coordinates.size.width.toFloat()
@@ -444,6 +511,7 @@ fun CourseCard(
                     bounds = cardBoundsPx,
                     refreshBounds = refreshCardBounds,
                     scope = scope,
+                    dragEnabled = dragEnabled,
                     onSinkChange = { sinkPressed = it },
                     onLongPressStart = onLongPressStart,
                     onClick = onClick,
@@ -453,10 +521,25 @@ fun CourseCard(
                     onMenuDismiss = onMenuDismiss,
                 )
         ) {
-            CardContent(course, sectionCount, textColor, hasMultipleCourses,
-                isTablet, cardContentAlignment, cardHeight.value, cardHeightPerSection,
-                isHoliday, isWorkSwap, isCurrentWeek, showClassroom, showTeacher, cardTextScale, isDark,
-                isCourseCancelled, courseTint = courseColors.tint)
+            CardContent(
+                course,
+                sectionCount,
+                textColor,
+                hasMultipleCourses,
+                isTablet,
+                cardContentAlignment,
+                cardHeight.value,
+                cardHeightPerSection,
+                isHoliday,
+                isWorkSwap,
+                isCurrentWeek,
+                showClassroom,
+                showTeacher,
+                cardTextScale,
+                isDark,
+                isCourseCancelled,
+                courseTint = courseColors.tint
+            )
         }
     }
 }
@@ -465,15 +548,21 @@ fun CourseCard(
  * 课程卡手势：有壁纸 / 无壁纸两条渲染路径共用同一实现，避免各改一份产生漂移。
  *
  * - 轻点（位移 < 8dp）→ [onClick]
- * - 长按 320ms → [onLongPressStart] 弹菜单，随后任意移动进入拖拽
+ * - 长按 320ms → [onLongPressStart] 弹菜单，随后移动即进拖拽态（浮层跟手）
+ * - 拖拽态里位移超过容差（8dp）才算真的拖起来：此时才 [onDragStart]（点亮跟手高光）
+ *   并 [onMenuDismiss] 收菜单（[dragEnabled] 为 false 时这两步都不发生）
  * - 长按前横滑主导 / 位移超容差 / 多指按下 → 放弃本次手势，把滚动让给 Pager
+ *
+ * ⚠ [dragEnabled] = false 时菜单**不随移动收起**：这类课唯一的操作入口就是菜单，
+ * 手指抖一下就把菜单收掉等于没法用。松手后菜单继续留在屏幕上等用户点。
  */
 private fun Modifier.courseCardGesture(
     course: Course,
-    touchState: com.haooz.chedule.ui.screens.ScheduleTouchState?,
+    touchState: ScheduleTouchState?,
     bounds: FloatArray,
     refreshBounds: () -> Unit,
     scope: CoroutineScope,
+    dragEnabled: Boolean,
     onSinkChange: (Boolean) -> Unit,
     onLongPressStart: (left: Float, top: Float, width: Float, height: Float) -> Unit,
     onClick: () -> Unit,
@@ -481,7 +570,7 @@ private fun Modifier.courseCardGesture(
     onDrag: (offsetX: Float, offsetY: Float) -> Unit,
     onDragEnd: () -> Unit,
     onMenuDismiss: () -> Unit,
-): Modifier = pointerInput(course) {
+): Modifier = pointerInput(course, dragEnabled) {
     awaitEachGesture {
         val down = awaitFirstDown(requireUnconsumed = false)
         down.consume()
@@ -505,7 +594,8 @@ private fun Modifier.courseCardGesture(
         try {
             while (true) {
                 // 菜单/拖拽需要拦穿透用 Main pass；否则 Final pass 让父级滚动先处理
-                val pass = if (menuShown || isDragging) PointerEventPass.Main else PointerEventPass.Final
+                val pass =
+                    if (menuShown || isDragging) PointerEventPass.Main else PointerEventPass.Final
                 val event = awaitPointerEvent(pass)
 
                 if (event.changes.none { it.pressed }) {
@@ -547,17 +637,21 @@ private fun Modifier.courseCardGesture(
                     event.changes.forEach { it.consume() }
                     break
                 }
-                // 菜单已弹出：转为拖拽；位移超容差则收起菜单（拖拽浮层保留）
-                if (menuShown && !isDragging) {
+                // 菜单已弹出：手指一动就进「拖拽态」，浮层开始跟手。
+                // ⚠ 这里**不**调 onDragStart —— 它点亮的是跟手高光，抖动几像素就亮
+                //   会很廉价；高光留给下面真正「拖起来」的那一刻。
+                // ⚠ dragEnabled = false（自定义时间课）时整段跳过：菜单留在原地等用户点
+                if (dragEnabled && menuShown && !isDragging) {
                     isDragging = true
                     onSinkChange(false)
-                    onDragStart()
                 }
-                if (menuShown && moved > slop) {
+                // 位移超容差 = 真的拖起来了：此刻收菜单，并点亮跟手高光
+                if (dragEnabled && menuShown && moved > slop) {
                     menuShown = false
+                    onDragStart()
                     onMenuDismiss()
                 }
-                if (isDragging) onDrag(dx, dy)
+                if (dragEnabled && isDragging) onDrag(dx, dy)
                 event.changes.forEach { it.consume() }
             }
         } finally {
@@ -567,13 +661,25 @@ private fun Modifier.courseCardGesture(
 }
 
 @Composable
-private fun CardContent(course: Course, sectionCount: Int, textColor: Color, hasMultipleCourses: Boolean,
-                        isTablet: Boolean = false, cardContentAlignment: com.haooz.chedule.data.CardContentAlignment = com.haooz.chedule.data.CardContentAlignment.CENTER_CENTER,
-                         cardHeightDp: Float = 0f, cardHeightPerSection: Float = 54f,
-                         isHoliday: Boolean = false, isWorkSwap: Boolean = false, isCurrentWeek: Boolean = true,
-                         showClassroom: Boolean = true, showTeacher: Boolean = true, cardTextScale: Float = 1f,
-                         isDark: Boolean = isAppDarkTheme(), isCourseCancelled: Boolean = false,
-                         courseTint: Color = Color(course.colorRes)) {
+private fun CardContent(
+    course: Course,
+    sectionCount: Int,
+    textColor: Color,
+    hasMultipleCourses: Boolean,
+    isTablet: Boolean = false,
+    cardContentAlignment: CardContentAlignment = CardContentAlignment.CENTER_CENTER,
+    cardHeightDp: Float = 0f,
+    cardHeightPerSection: Float = 54f,
+    isHoliday: Boolean = false,
+    isWorkSwap: Boolean = false,
+    isCurrentWeek: Boolean = true,
+    showClassroom: Boolean = true,
+    showTeacher: Boolean = true,
+    cardTextScale: Float = 1f,
+    isDark: Boolean = isAppDarkTheme(),
+    isCourseCancelled: Boolean = false,
+    courseTint: Color = Color(course.colorRes)
+) {
     val infoFontSize = 11.sp * cardTextScale.coerceIn(0.5f, 2.0f)
     val infoLineHeight = 12.sp * cardTextScale.coerceIn(0.5f, 2.0f)
     val courseNameFontSize = 12.7.sp * cardTextScale.coerceIn(0.5f, 2.0f)
@@ -587,35 +693,40 @@ private fun CardContent(course: Course, sectionCount: Int, textColor: Color, has
     val availableHeightDp = cardHeightDp - 16f
     val courseNameLineH = with(density) { courseNameLineHeight.toDp().value }
     val infoLineH = with(density) { infoLineHeight.toDp().value }
-    val reservedForInfo = ((if (effectiveShowClassroom) 1 else 0) + (if (effectiveShowTeacher) 1 else 0)) * infoLineH
-    val nameMaxLines = ((availableHeightDp - reservedForInfo) / courseNameLineH).toInt().coerceAtLeast(1)
+    val reservedForInfo =
+        ((if (effectiveShowClassroom) 1 else 0) + (if (effectiveShowTeacher) 1 else 0)) * infoLineH
+    val nameMaxLines =
+        ((availableHeightDp - reservedForInfo) / courseNameLineH).toInt().coerceAtLeast(1)
     val bodyMaxLines = nameMaxLines +
-        (if (effectiveShowClassroom) 1 else 0) +
-        (if (effectiveShowTeacher) 1 else 0)
+            (if (effectiveShowClassroom) 1 else 0) +
+            (if (effectiveShowTeacher) 1 else 0)
 
     Box(modifier = Modifier.fillMaxSize()) {
         val verticalArrangement = when (cardContentAlignment) {
-            com.haooz.chedule.data.CardContentAlignment.TOP_START,
-            com.haooz.chedule.data.CardContentAlignment.TOP_CENTER -> Arrangement.Top
-            com.haooz.chedule.data.CardContentAlignment.CENTER_START,
-            com.haooz.chedule.data.CardContentAlignment.CENTER_CENTER -> Arrangement.Center
+            CardContentAlignment.TOP_START,
+            CardContentAlignment.TOP_CENTER -> Arrangement.Top
+
+            CardContentAlignment.CENTER_START,
+            CardContentAlignment.CENTER_CENTER -> Arrangement.Center
         }
         val horizontalAlignment = when (cardContentAlignment) {
-            com.haooz.chedule.data.CardContentAlignment.TOP_START,
-            com.haooz.chedule.data.CardContentAlignment.CENTER_START -> Alignment.Start
-            com.haooz.chedule.data.CardContentAlignment.TOP_CENTER,
-            com.haooz.chedule.data.CardContentAlignment.CENTER_CENTER -> Alignment.CenterHorizontally
+            CardContentAlignment.TOP_START,
+            CardContentAlignment.CENTER_START -> Alignment.Start
+
+            CardContentAlignment.TOP_CENTER,
+            CardContentAlignment.CENTER_CENTER -> Alignment.CenterHorizontally
         }
         val textAlign = when (cardContentAlignment) {
-            com.haooz.chedule.data.CardContentAlignment.TOP_START,
-            com.haooz.chedule.data.CardContentAlignment.CENTER_START -> TextAlign.Start
-            com.haooz.chedule.data.CardContentAlignment.TOP_CENTER,
-            com.haooz.chedule.data.CardContentAlignment.CENTER_CENTER -> TextAlign.Center
+            CardContentAlignment.TOP_START,
+            CardContentAlignment.CENTER_START -> TextAlign.Start
+
+            CardContentAlignment.TOP_CENTER,
+            CardContentAlignment.CENTER_CENTER -> TextAlign.Center
         }
         // 课名+地点+教师合成一段 Text：省掉每卡 2 个 Text + 2 个 Spacer 的测量/绘制节点
-        val bodyText = androidx.compose.ui.text.buildAnnotatedString {
+        val bodyText = buildAnnotatedString {
             pushStyle(
-                androidx.compose.ui.text.SpanStyle(
+                SpanStyle(
                     fontWeight = FontWeight.Bold,
                     fontSize = courseNameFontSize,
                 )
@@ -624,13 +735,13 @@ private fun CardContent(course: Course, sectionCount: Int, textColor: Color, has
             pop()
             if (effectiveShowClassroom) {
                 append('\n')
-                pushStyle(androidx.compose.ui.text.SpanStyle(fontSize = infoFontSize))
+                pushStyle(SpanStyle(fontSize = infoFontSize))
                 append("@${course.classroom}")
                 pop()
             }
             if (effectiveShowTeacher) {
                 append('\n')
-                pushStyle(androidx.compose.ui.text.SpanStyle(fontSize = infoFontSize))
+                pushStyle(SpanStyle(fontSize = infoFontSize))
                 append(course.teacher)
                 pop()
             }
@@ -684,7 +795,8 @@ private fun CardContent(course: Course, sectionCount: Int, textColor: Color, has
                     if (MiuixTheme.isDynamicColor) textColor
                     else if (isDark) Color.White.copy(alpha = 0.8f) else Color.White
                 } else {
-                    if (isDark) Color.White.copy(alpha = 0.4f) else Color.Black.copy(alpha = 0.4f)},
+                    if (isDark) Color.White.copy(alpha = 0.4f) else Color.Black.copy(alpha = 0.4f)
+                },
                 modifier = Modifier
                     .align(Alignment.TopEnd)
                     .padding(if (isTablet) 6.dp else 5.dp)
@@ -752,7 +864,7 @@ internal class OutlineCache {
     var width: Float = Float.NaN
     var height: Float = Float.NaN
     var radius: Float = Float.NaN
-    var layoutDirection: androidx.compose.ui.unit.LayoutDirection =
-        androidx.compose.ui.unit.LayoutDirection.Ltr
-    var outline: androidx.compose.ui.graphics.Outline? = null
+    var layoutDirection: LayoutDirection =
+        LayoutDirection.Ltr
+    var outline: Outline? = null
 }

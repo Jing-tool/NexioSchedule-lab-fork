@@ -128,10 +128,10 @@ git cherry-pick 99990be 48e434f ...      # 按第二节的 SHA
 
 ## 五、构建与签名
 
-- 构建工作副本在 **app 私有目录**：`$HOME/build/nexio`（与 `src/` 内容一致，`src/` 是 git worktree）
-- 构建脚本：`$HOME/build-nexio.sh`（含 JDK21 / SDK / aapt2 override 等坑的规避，注释见 `FINAL-REPORT.md`）
-- 建议加资源限制，免得吃满手机：`nice -n 19 ./build-nexio.sh :app:assembleRelease --max-workers=2`
-- 签名：`$HOME/nexio-local.jks`，alias `nexio`。**口令不写在这里**（工作区禁止落密钥），见 `REVISION-v2.md`
+- 构建在**应用私有目录**里做一份独立副本（与工作区内容一致的拷贝；早年的 worktree 方案已退役）
+- 构建脚本、JDK/SDK/aapt2 的坑规避都放构建机本地，**不入库**
+- 构建与服务都在远端 CI 上跑；本机只改文件（见 §十七「验证方式」）
+- 签名用本 fork 的 keystore：**文件与口令只在构建机与 GitHub Secrets 里**，仓库内一律不写、也不指路
 - 产物目录：`dist-v21/ … dist-v33/`，每次都是"同签名可直接覆盖安装"
 
 ---
@@ -570,8 +570,8 @@ master 一个字节没动，问题在预演分支上就被抓住。
 6. 节次几何单一真源 `sectionTopDp`（拖拽落点）
 
 ### 验证方式（本地编不了）
-本机 Termux 的 JDK/gradle 已被清掉（`$HOME/lib/jvm` 不存在，`_cache/jdkstage` 在 /storage 上
-noexec 跑不起来），所以**编译只有 CI 能验**：推预演分支 → `workflow_dispatch(ref=<分支>, dry_run=true)`。
+构建机上没有可用的 JDK/Gradle（工作区所在卷不可执行），所以**编译只有 CI 能验**：
+推预演分支 → `workflow_dispatch(ref=<分支>, dry_run=true)`。
 注意门禁在 dispatch 时也会跑，所以预演分支要么先把清单修到全绿，要么临时放宽门禁步骤。
 **发版期间别连发两次 dispatch**（`concurrency.cancel-in-progress` 会取消在跑的那轮）。
 

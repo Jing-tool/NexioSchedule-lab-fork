@@ -383,10 +383,13 @@ jobs:
             echo "本次没有 wear 变体（未配置 WEAR_* secrets），跳过"
           fi
 
-      - name: 推送 master（只有"合并干净 + 未命中分歧清单 + 非 dry_run"才推）
+      - name: 推送 master（合并干净且非 dry_run 就推；分歧清单只挡发版，不挡同步）
         # ★ 顺序刻意如此：先合并 → 再构建与全部门禁/契约核验 → **最后才推 master**。
         #   这样远端 master 永远不会指向一个"构建不过"的树；冲突时 merged=false，同样不推。
-        if: steps.merge.outputs.merged == 'true' && steps.watch.outputs.blocked != 'true' && inputs.dry_run != true
+        # ★ 命中分歧清单**不再阻止推 master**：这一轮的门禁/构建/签名/契约已经全绿，
+        #   推上去是安全的；不推的后果是「上游一碰我们的定制文件就停止同步好几天」（真发生过）。
+        #   人工把关放在**发版**那一步：blocked 时仍只验证不发版，并开 Issue 提醒。
+        if: steps.merge.outputs.merged == 'true' && inputs.dry_run != true
         run: |
           git push origin HEAD:master
           echo "✅ master 已前进到 $(git rev-parse --short HEAD)（已含本次合并进来的上游提交）"
@@ -487,9 +490,9 @@ jobs:
               echo
               echo "\`tools/divergence-watch.txt\` 里列的都是本 fork **故意**跟上游不一样的地方"
               echo "（备份语义、毛玻璃系数、分钟节拍、岛 B 区联动 …）。上游一改这些文件，"
-              echo "自动合并就有可能把我们的取舍悄悄翻回去 —— 所以这次**只验证、不发版**。"
+              echo "自动合并就有可能把我们的取舍悄悄翻回去 —— 所以这次**不发版**（但 master 照常推进，否则就是停止跟上游）。"
               echo
-              echo "请人工过一眼这些文件的 diff，确认取舍没被翻掉后，手动 Run 一次本 workflow 即可正常发版。"
+              echo "本轮的门禁/构建/签名/契约都过了，master 已推进。请人工过一眼这些文件的 diff，确认取舍没被翻掉后，手动 Run 一次本 workflow 即可发版。"
             fi
           } > /tmp/issue.md
           gh issue create --repo "$GITHUB_REPOSITORY" \

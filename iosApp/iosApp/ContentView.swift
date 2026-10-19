@@ -296,6 +296,11 @@ private final class AppHostController: UIViewController {
         chromeController.onTransitionDirectionChange = { [weak self] vertical in
             self?.host.updateTabTransitionDirection(vertical: vertical)
         }
+        // 屏幕形态：折叠屏折叠态（tab bar 竖排、状态栏跑到右侧、顶部没有状态栏）
+        // 顶栏糊带与星期行据此换一套几何
+        chromeController.onVerticalBarEdgeChange = { [weak self] vertical in
+            self?.host.updateVerticalBarEdge(active: vertical)
+        }
         chromeController.updateTransitionDirection()
         // Compose 绘制阶段直推的位移：同步落到 UIKit，与内容同帧（详见 applyPushedChromeOffset）
         host.onCutoutChromeOffset = { [weak self] offsetY in
@@ -574,7 +579,10 @@ private final class AppHostController: UIViewController {
         guard screenW > 0, screenH > 0 else { return }
         let raw = CGFloat(min(1, max(0.65, host.cutoutScale)))
         let scale = raw < 0.999 ? raw : 1
-        let pivot = CGPoint(x: screenW * 0.5, y: screenH * CGFloat(host.cutoutCenterYRatio))
+        let pivot = CGPoint(
+            x: screenW * CGFloat(host.cutoutCenterXRatio),
+            y: screenH * CGFloat(host.cutoutCenterYRatio)
+        )
         // 外观页里打开底部弹窗时，Compose 主内容整体上移让位；原生 chrome（底栏 + 导航栏）
         let sheetOffsetY = cachedChromeOffsetY
         // 竖排 tab bar 本体。`chromeController.view` 子树里若有 SwiftUI 托管的
@@ -642,11 +650,6 @@ private final class AppHostController: UIViewController {
         let showHeader = host.showsNativeHeader || host.scheduleLibraryActive ||
             host.keepsNativeHeaderDuringCutout
         let inset = showHeader ? max(0, view.safeAreaInsets.top - window.safeAreaInsets.top) : 0
-        // 真实状态栏高度（window 的安全区顶部）。折叠屏 iPhone 折叠态状态栏跑到右侧，
-        // 顶部为 0 —— Compose 的 `WindowInsets.statusBars` 在 iOS 上读到的是
-        // `view.safeAreaInsets.top`（含导航栏），判断不出「顶部到底有没有状态栏」，
-        // 所以顶栏糊带高度必须由这里显式喂进去。
-        host.updateStatusBarHeight(points: Double(window.safeAreaInsets.top))
         guard abs(lastTopInset - inset) > 0.5 else { return }
         lastTopInset = inset
         host.updateTopBarInset(points: Double(inset))
@@ -752,6 +755,8 @@ private final class NativeChromeController: UITabBarController, UITabBarControll
     var onUserSelection: ((Int) -> Void)?
     var onLayout: (() -> Void)?
     var onTransitionDirectionChange: ((Bool) -> Void)?
+    /// tab bar 是否竖排到屏幕一侧 = 折叠屏 iPhone 折叠态（状态栏跑到右侧、顶部没有状态栏）
+    var onVerticalBarEdgeChange: ((Bool) -> Void)?
     private var configuredShiftMode: Bool?
     private var configuredTabCount = 0
 
@@ -768,19 +773,23 @@ private final class NativeChromeController: UITabBarController, UITabBarControll
         }
     }
 
+    /// `verticalBarEdge`（leading/trailing）= 折叠屏 iPhone 折叠态：tab bar 竖排到侧边，
+    /// 状态栏跟着移到右侧、屏幕顶部没有状态栏。形态只认这个 trait ——
+    /// 高度算出来是 0 分不出「顶部没有」和「被导航栏吃光」。
     func updateTransitionDirection() {
-        guard #available(iOS 27.1, *) else {
-            onTransitionDirectionChange?(false)
-            return
+        let vertical: Bool
+        if #available(iOS 27.1, *) {
+            switch traitCollection.verticalBarEdge {
+            case .leading, .trailing: vertical = true
+            case .unspecified: vertical = false
+            @unknown default: vertical = false
+            }
+        } else {
+            vertical = false
         }
-        switch traitCollection.verticalBarEdge {
-        case .leading, .trailing:
-            onTransitionDirectionChange?(true)
-        case .unspecified:
-            onTransitionDirectionChange?(false)
-        @unknown default:
-            onTransitionDirectionChange?(false)
-        }
+        onTransitionDirectionChange?(vertical)
+        // 排除 iPad：它把 tab bar 挪到侧边时同样报 verticalBarEdge，但顶部一直有状态栏
+        onVerticalBarEdgeChange?(vertical && traitCollection.userInterfaceIdiom == .phone)
     }
 
     func configure(tabCount: Int, shiftMode: Bool, selectedIndex: Int) {

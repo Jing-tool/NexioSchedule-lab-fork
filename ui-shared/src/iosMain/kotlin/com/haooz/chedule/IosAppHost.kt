@@ -365,6 +365,7 @@ class IosAppHost {
     val mainProgress: Double get() = mainTransition.value.toDouble()
     val cutoutScale: Float get() = navigation.cutoutScale
     val cutoutCenterYRatio: Float get() = navigation.cutoutCenterYRatio
+    val cutoutCenterXRatio: Float get() = navigation.cutoutCenterXRatio
 
     /**
      * Per-frame push of the main content's vertical offset while the customize page's sheet is
@@ -430,6 +431,7 @@ class IosAppHost {
                         NativeHostSnapshot(
                             selectedTab, tabCount, shiftMode, showsNativeTabBar,
                             isDark, overlayActive, mainProgress, cutoutScale, cutoutCenterYRatio,
+                            cutoutCenterXRatio,
                             nativeRouteIds, floatingOverlayActive, detailOverlayActive,
                             // 逐字段快照（含底栏与系统标题开关）—— 见 NativeDocumentChrome.snapshot
                             nativePages.map { it.chrome.snapshot() },
@@ -491,11 +493,9 @@ class IosAppHost {
         }
     }
 
-    fun updateStatusBarHeight(points: Double) {
-        val height = if (points.isFinite()) points.coerceAtLeast(0.0) else -1.0
-        if (kotlin.math.abs(navigation.statusBarHeight - height) > 0.5) {
-            navigation.statusBarHeight = height
-        }
+    /** 屏幕形态：tab bar 是否竖排到屏幕一侧（`traitCollection.verticalBarEdge`）。 */
+    fun updateVerticalBarEdge(active: Boolean) {
+        navigation.verticalBarEdgeActive = active
     }
 
     fun updateTopBarInset(points: Double) {
@@ -560,6 +560,7 @@ private data class NativeHostSnapshot(
     val mainProgress: Double,
     val cutoutScale: Float,
     val cutoutCenterYRatio: Float,
+    val cutoutCenterXRatio: Float,
     val nativeRouteIds: List<String>,
     val floatingOverlayActive: Boolean,
     val detailOverlayActive: Boolean,
@@ -675,7 +676,7 @@ internal fun AppRoute.nativeDocumentTitle(): String? = when (this) {
     AppRoute.ScheduleBackup -> "课表备份"
     AppRoute.ScheduleImport -> "课表导入"
     AppRoute.About -> "关于应用"
-    AppRoute.CourseTimeSettings -> "课表节数与时间"
+    AppRoute.CourseTimeSettings -> "课程时间管理"
     // 网页导入页与选择页同级：必须是原生文档（走 Compose 栈会被原生文档挡住）
     AppRoute.WebImport -> "网页导入"
     // ⚠ 必须是原生文档：从「课表导出/导入/备份」这些原生文档页跳进来，

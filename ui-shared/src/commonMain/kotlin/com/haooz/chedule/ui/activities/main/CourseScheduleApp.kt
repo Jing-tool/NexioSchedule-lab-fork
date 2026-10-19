@@ -93,7 +93,8 @@ import kotlin.time.Duration.Companion.milliseconds
 
 /**
  * 真课表主界面。平台能力全部走注入参数，缺能力的入口不渲染；
- * 位图统一 [ImageBitmap]，快照裁剪走 `cropImageBitmap`，壁纸存储走 `WallpaperStore`。
+ * 位图统一 [ImageBitmap]，快照裁剪走 [TransitionLayerSnapshot]（GraphicsLayer + clipRect，零位图分配），
+ * 壁纸存储走 `WallpaperStore`。
  */
 
 /** 宿主注入的位图回收实现（Android = `asAndroidBitmap().recycle()`；iOS/桌面 = null，交给 GC）。 */
@@ -603,6 +604,7 @@ fun CourseScheduleApp(
                 // 需由Swift 读这个值自行施加同样变换（对齐 Android 上 Compose 底栏的行为）
                 host.cutoutScale = cutoutMainScale.value
                 host.cutoutCenterYRatio = cutoutCenterYRatio
+                host.cutoutCenterXRatio = cutoutCenterXRatio
             }
         }
         // 外观页弹窗让位时主内容的纵向位移，改由主内容自己的 graphicsLayer 块直推

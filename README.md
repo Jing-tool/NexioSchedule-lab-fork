@@ -188,6 +188,8 @@ androidApp/src/main/java/com/haooz/chedule/
 
 允许自由使用、学习、修改及商业分发；若通过网络向他人提供本应用或修改版，须同时提供完整对应源代码。协议全文见 [LICENSE](LICENSE)，中文摘要与带目录的在线版本见官网 [开源协议页](https://nexioschedule.icu/license.html)。
 
+第三方组件（`miuix/`、`backdrop/` 等 Apache-2.0 修改版）的许可证、修改声明与不随仓库分发的专有组件说明，见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
+
 ## 免责声明
 
 本项目按「现状」提供，作者不承担因使用本软件而产生的任何直接或间接损失。请自行评估并遵守 AGPL-3.0 的各项条款。

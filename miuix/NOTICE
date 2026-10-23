@@ -1,0 +1,9 @@
+This module is a modified fork of compose-miuix-ui/miuix.
+
+Original: https://github.com/compose-miuix-ui/miuix (Apache License 2.0)
+Copyright 2025, compose-miuix-ui contributors.
+
+Modifications for NexioSchedule: KMP multi-module port/adaptations, local fixes and
+Nexio-specific theming/layout changes. See the repository history for details.
+
+Licensed under the Apache License, Version 2.0 (see LICENSE in this directory).

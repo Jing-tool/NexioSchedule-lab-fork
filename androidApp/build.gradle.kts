@@ -82,7 +82,15 @@ dependencies {
     implementation(project(":miuix"))
 
     // ===== 小米穿戴（手表 interconnect）=====
-    implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.jar", "*.aar"))))
+    // XMS 手表 SDK（xms-wearable-lib_1.4_release.aar）是小米的**专有二进制**，不随仓库分发。
+    // 本地构建前把 AAR 放到 androidApp/libs/ 下；仓库只保留 *.jar。
+    implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.jar"))))
+    val xmsAar = file("libs/xms-wearable-lib_1.4_release.aar")
+    if (xmsAar.exists()) {
+        implementation(files(xmsAar))
+    } else {
+        logger.warn("⚠️ 缺少 androidApp/libs/xms-wearable-lib_1.4_release.aar（小米 XMS 手表 SDK，专有，不入库），本次构建会在编译 wearable 代码时失败。")
+    }
 
     // ===== AndroidX / Compose 基础 =====
     // Compose BOM：统一管理所有 Compose 库版本

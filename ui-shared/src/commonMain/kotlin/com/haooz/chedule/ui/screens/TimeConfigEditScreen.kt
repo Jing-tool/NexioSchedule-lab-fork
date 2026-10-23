@@ -1,10 +1,7 @@
 /** 时间配置编辑页面 - Screen */
 package com.haooz.chedule.ui.screens
 
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -29,7 +26,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.material3.Text
+import androidx.compose.ui.text.style.TextAlign
+import com.haooz.chedule.ui.components.CardExpand
+import com.haooz.chedule.ui.components.text.material.Text as Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -732,11 +731,7 @@ fun TimeConfigEditScreen(
                                                     checked = quickExpanded,
                                                     onCheckedChange = { quickExpanded = it })
                                             }
-                                            AnimatedVisibility(
-                                                visible = quickExpanded,
-                                                enter = expandVertically(),
-                                                exit = shrinkVertically()
-                                            ) {
+                                            CardExpand(visible = quickExpanded) {
                                                 Column(modifier = Modifier.fillMaxWidth()) {
                                                     ArrowPreference(
                                                         title = "每节课时长",
@@ -744,7 +739,8 @@ fun TimeConfigEditScreen(
                                                             Text(
                                                                 "${classDuration}分钟",
                                                                 fontSize = 14.5.sp,
-                                                                color = MiuixTheme.colorScheme.onSurfaceVariantActions
+                                                                color = MiuixTheme.colorScheme.onSurfaceVariantActions,
+                                                                textAlign = TextAlign.End,
                                                             )
                                                         },
                                                         onClick = {
@@ -761,7 +757,8 @@ fun TimeConfigEditScreen(
                                                             Text(
                                                                 "${shortBreak}分钟",
                                                                 fontSize = 14.5.sp,
-                                                                color = MiuixTheme.colorScheme.onSurfaceVariantActions
+                                                                color = MiuixTheme.colorScheme.onSurfaceVariantActions,
+                                                                textAlign = TextAlign.End,
                                                             )
                                                         },
                                                         onClick = {
@@ -794,11 +791,7 @@ fun TimeConfigEditScreen(
                                                                 longBreakEnabled = it
                                                             })
                                                     }
-                                                    AnimatedVisibility(
-                                                        visible = longBreakEnabled,
-                                                        enter = expandVertically(),
-                                                        exit = shrinkVertically()
-                                                    ) {
+                                                    CardExpand(visible = longBreakEnabled) {
                                                         Column {
                                                             ArrowPreference(
                                                                 title = "上午大课间休息",
@@ -806,7 +799,8 @@ fun TimeConfigEditScreen(
                                                                     Text(
                                                                         "第${longBreakMorningSection}节后 ${longBreakMorning}分钟",
                                                                         fontSize = 14.5.sp,
-                                                                        color = MiuixTheme.colorScheme.onSurfaceVariantActions
+                                                                        color = MiuixTheme.colorScheme.onSurfaceVariantActions,
+                                                                        textAlign = TextAlign.End,
                                                                     )
                                                                 },
                                                                 onClick = {
@@ -824,7 +818,8 @@ fun TimeConfigEditScreen(
                                                                     Text(
                                                                         "第${longBreakAfternoonSection}节后 ${longBreakAfternoon}分钟",
                                                                         fontSize = 14.5.sp,
-                                                                        color = MiuixTheme.colorScheme.onSurfaceVariantActions
+                                                                        color = MiuixTheme.colorScheme.onSurfaceVariantActions,
+                                                                        textAlign = TextAlign.End,
                                                                     )
                                                                 },
                                                                 onClick = {
@@ -842,7 +837,8 @@ fun TimeConfigEditScreen(
                                                                     Text(
                                                                         "第${longBreakEveningSection}节后 ${longBreakEvening}分钟",
                                                                         fontSize = 14.5.sp,
-                                                                        color = MiuixTheme.colorScheme.onSurfaceVariantActions
+                                                                        color = MiuixTheme.colorScheme.onSurfaceVariantActions,
+                                                                        textAlign = TextAlign.End,
                                                                     )
                                                                 },
                                                                 onClick = {
@@ -865,7 +861,8 @@ fun TimeConfigEditScreen(
                                                                     morningStartMinute
                                                                 ),
                                                                 fontSize = 14.5.sp,
-                                                                color = MiuixTheme.colorScheme.onSurfaceVariantActions
+                                                                color = MiuixTheme.colorScheme.onSurfaceVariantActions,
+                                                                textAlign = TextAlign.End,
                                                             )
                                                         },
                                                         onClick = {
@@ -886,7 +883,8 @@ fun TimeConfigEditScreen(
                                                                     afternoonStartMinute
                                                                 ),
                                                                 fontSize = 14.5.sp,
-                                                                color = MiuixTheme.colorScheme.onSurfaceVariantActions
+                                                                color = MiuixTheme.colorScheme.onSurfaceVariantActions,
+                                                                textAlign = TextAlign.End,
                                                             )
                                                         },
                                                         onClick = {
@@ -907,7 +905,8 @@ fun TimeConfigEditScreen(
                                                                     eveningStartMinute
                                                                 ),
                                                                 fontSize = 14.5.sp,
-                                                                color = MiuixTheme.colorScheme.onSurfaceVariantActions
+                                                                color = MiuixTheme.colorScheme.onSurfaceVariantActions,
+                                                                textAlign = TextAlign.End,
                                                             )
                                                         },
                                                         onClick = {
@@ -1001,7 +1000,8 @@ fun TimeConfigEditScreen(
                                                         Text(
                                                             formatTimeRangeForDisplay(timeStr),
                                                             fontSize = 14.5.sp,
-                                                            color = MiuixTheme.colorScheme.onSurfaceVariantActions
+                                                            color = MiuixTheme.colorScheme.onSurfaceVariantActions,
+                                                            textAlign = TextAlign.End,
                                                         )
                                                     },
                                                     onClick = {
@@ -1040,7 +1040,8 @@ fun TimeConfigEditScreen(
                                                         Text(
                                                             formatTimeRangeForDisplay(timeStr),
                                                             fontSize = 14.5.sp,
-                                                            color = MiuixTheme.colorScheme.onSurfaceVariantActions
+                                                            color = MiuixTheme.colorScheme.onSurfaceVariantActions,
+                                                            textAlign = TextAlign.End,
                                                         )
                                                     },
                                                     onClick = {
@@ -1079,7 +1080,8 @@ fun TimeConfigEditScreen(
                                                         Text(
                                                             formatTimeRangeForDisplay(timeStr),
                                                             fontSize = 14.5.sp,
-                                                            color = MiuixTheme.colorScheme.onSurfaceVariantActions
+                                                            color = MiuixTheme.colorScheme.onSurfaceVariantActions,
+                                                            textAlign = TextAlign.End,
                                                         )
                                                     },
                                                     onClick = {
@@ -1110,7 +1112,7 @@ fun TimeConfigEditScreen(
                                         insideMargin = PaddingValues(0.dp)
                                     ) {
                                         Column(modifier = Modifier.fillMaxWidth()) {
-                                            if (specialBlocks.isEmpty()) {
+                                            CardExpand(visible = specialBlocks.isEmpty()) {
                                                 ArrowPreference(
                                                     title = "暂无特殊课程",
                                                     summary = "点击添加早读、眼保健操等无编号时段",
@@ -1121,7 +1123,8 @@ fun TimeConfigEditScreen(
                                                         showSpecialDialog = true
                                                     }
                                                 )
-                                            } else {
+                                            }
+                                            CardExpand(visible = specialBlocks.isNotEmpty()) {
                                                 // 始终按开始时间排序展示
                                                 sortSpecialBlocksByTime(specialBlocks).forEachIndexed { index, block ->
                                                     ArrowPreference(
@@ -1637,7 +1640,8 @@ fun TimeConfigEditScreen(
                                             fontWeight = FontWeight.Medium,
                                             color = if (nameCount > 2) ComposeColor(0xFFF44336)
                                             else MiuixTheme.colorScheme.onSurfaceVariantActions,
-                                            modifier = Modifier.padding(end = 16.dp)
+                                            modifier = Modifier.padding(end = 16.dp),
+                                            textAlign = TextAlign.Center,
                                         )
                                     },
                                     modifier = Modifier.fillMaxWidth()
@@ -1796,7 +1800,9 @@ fun TimeConfigEditScreen(
                                 Text(
                                     text = overlapMessage,
                                     style = MiuixTheme.textStyles.body1,
-                                    color = MiuixTheme.colorScheme.onSurface
+                                    color = MiuixTheme.colorScheme.onSurface,
+                                    // 父 Column 居中摆位：提示语换字时要按中心收放，否则先贴左边
+                                    textAlign = TextAlign.Center,
                                 )
                                 Text(
                                     text = "存在时间重叠，请重新设置",
@@ -1830,7 +1836,9 @@ fun TimeConfigEditScreen(
                                 Text(
                                     text = overlapMessage,
                                     style = MiuixTheme.textStyles.body1,
-                                    color = MiuixTheme.colorScheme.onSurface
+                                    color = MiuixTheme.colorScheme.onSurface,
+                                    // 父 Column 居中摆位：提示语换字时要按中心收放，否则先贴左边
+                                    textAlign = TextAlign.Center,
                                 )
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Text(

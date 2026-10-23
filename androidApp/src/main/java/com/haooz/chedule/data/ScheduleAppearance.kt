@@ -199,11 +199,15 @@ object ScheduleAppearance {
     /** 参数快照缓存，读多写少 */
     private var cached: CombinationStyle? = null
 
-    /** 壁纸解码是主要瓶颈，按可用内存 1/8 做 Lru 缓存，绝对上限 32MB 防大堆机型占压过大 */
+    /** 壁纸解码是主要瓶颈，按可用内存做 Lru 缓存。
+     *
+     * 上限必须装得下**一张** cover 保存策略下的壁纸：3680×2760 ≈ 40.5MB，
+     * 长边封顶图 5520×2760 ≈ 61MB。此前上限 32MB 装不下，put 进去立即被
+     * 逐出 → 每次冷启动都在 IO 线程全量重解（~100ms + 40MB 分配）。
+     * 48MB 下限不可省：小内存机型 maxMemory/4 可能只有几 MB，等于没缓存。 */
     private val wallpaperCache: LruCache<String, Bitmap> = object : LruCache<String, Bitmap>(
-        // 4MB 下限不可省：小内存机型 maxMemory/8 可能只有几百 KB，等于没缓存
-        minOf(Runtime.getRuntime().maxMemory() / 8, 32L * 1024 * 1024)
-            .coerceAtLeast(4L * 1024 * 1024)
+        minOf(Runtime.getRuntime().maxMemory() / 4, 96L * 1024 * 1024)
+            .coerceAtLeast(48L * 1024 * 1024)
             .toInt()
     ) {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
@@ -442,11 +446,41 @@ object ScheduleAppearance {
 
     // ── 壁纸位图 ────────────────────────────────────────────
 
-    /** 壁纸的目标存储/解码分辨率：用长短边而非当前横竖屏，避免进应用方向不同导致采样/尺寸漂移 */
+    /** 壁纸的目标存储/解码分辨率：当前屏幕的 (宽, 高)，方向感知。
+     *
+     * ⚠ 曾经用长短边（maxOf/minOf）以规避横竖屏切换时的尺寸漂移，代价是横图在竖屏上
+     * 被按「短边对齐屏宽」砍掉高度（4000×3000 → 1674×1256），cover 显示时再放大
+     * 2.2 倍 —— 「选完壁纸很糊」的根因。方向感知后 load 侧 inSampleSize 对
+     * 两个方向都只按 cover 计算（只缩不扩），不会反向降质。 */
     private fun wallpaperTargetBounds(): Pair<Int, Int> {
         val metrics = appContext.resources.displayMetrics
-        return maxOf(metrics.widthPixels, metrics.heightPixels) to
-            minOf(metrics.widthPixels, metrics.heightPixels)
+        return metrics.widthPixels to metrics.heightPixels
+    }
+
+    /**
+     * 保存前的缩放策略：cover 到屏幕，只缩不扩，长边封顶 2×屏幕长边。
+     *
+     * 与 :ui-shared 的 [com.haooz.chedule.data.WallpaperBackend.saveTargetSize]
+     * 必须逐条一致 —— 共享层 save 先按策略缩一次，这里的 encode 链路会再判一次，
+     * 策略幂等（对已处理的图返回原尺寸）才不会二次丢像素。
+     */
+    private fun scaleWallpaperForSave(bitmap: Bitmap, targetW: Int, targetH: Int): Bitmap {
+        if (bitmap.width <= 0 || bitmap.height <= 0) return bitmap
+        val cover = maxOf(
+            targetW / bitmap.width.toFloat(),
+            targetH / bitmap.height.toFloat()
+        )
+        // cover > 1：源图比屏幕小（短边方向覆盖不足），原样保存，显示侧放大是唯一选择
+        if (cover > 1f) return bitmap
+        val maxLong = 2 * maxOf(targetW, targetH)
+        val longSide = maxOf(bitmap.width, bitmap.height)
+        if (longSide <= maxLong) return bitmap
+        val s = maxLong / longSide.toFloat()
+        return bitmap.scale(
+            (bitmap.width * s).toInt().coerceAtLeast(1),
+            (bitmap.height * s).toInt().coerceAtLeast(1),
+            true
+        )
     }
 
     /** 计算满足目标尺寸的 2 的幂次降采样倍数（inSampleSize） */
@@ -486,14 +520,7 @@ object ScheduleAppearance {
     fun saveWallpaper(bitmap: Bitmap): Boolean {
         return try {
             val (targetW, targetH) = wallpaperTargetBounds()
-            val scaled = if (bitmap.width > targetW || bitmap.height > targetH) {
-                val scale = minOf(targetW / bitmap.width.toFloat(), targetH / bitmap.height.toFloat())
-                bitmap.scale(
-                    (bitmap.width * scale).toInt().coerceAtLeast(1),
-                    (bitmap.height * scale).toInt().coerceAtLeast(1),
-                    true
-                )
-            } else bitmap
+            val scaled = scaleWallpaperForSave(bitmap, targetW, targetH)
             val file = File(appContext.filesDir, WALLPAPER_FILE)
             // 旧的 CompressFormat.WEBP 在 API 30 起被 WEBP_LOSSY 取代，语义等价（都是有损）
             val webpFormat = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {

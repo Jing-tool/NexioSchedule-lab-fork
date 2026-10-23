@@ -43,7 +43,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
-import androidx.compose.material3.Text
+import com.haooz.chedule.ui.components.text.material.Text as Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -881,7 +881,8 @@ fun CustomizeScheduleScreen(
                                         Text(
                                             text = "搭配 ${combIdx + 1}",
                                             color = Color.White.copy(alpha = 0.6f),
-                                            fontSize = 16.sp
+                                            fontSize = 16.sp,
+                                            textAlign = TextAlign.Center,
                                         )
                                     }
                                 }
@@ -1041,7 +1042,7 @@ fun CustomizeScheduleScreen(
                                 )
                                 .edgeLight(
                                     shape = ContinuousCapsule(),
-                                    edgeLight = rememberDefaultEdgeLight(baseColor = exitContainerColor)
+                                    edgeLight = rememberDefaultEdgeLight(baseColor = exitContainerColor),
                                 )
                                 .clickable(
                                     interactionSource = null,
@@ -1173,7 +1174,7 @@ fun CustomizeScheduleScreen(
                                 )
                                 .edgeLight(
                                     shape = ContinuousCapsule(),
-                                    edgeLight = rememberDefaultEdgeLight(baseColor = primaryColor)
+                                    edgeLight = rememberDefaultEdgeLight(baseColor = primaryColor),
                                 )
                                 .clickable(
                                     interactionSource = null,
@@ -1847,7 +1848,8 @@ private fun SliderItem(
                         text = suffix,
                         fontWeight = FontWeight.Medium,
                         fontSize = 17.sp,
-                        color = textColor
+                        color = textColor,
+                        textAlign = TextAlign.End,
                     )
                 }
             } else {
@@ -1920,7 +1922,8 @@ private fun RefractionItem(
                     text = value.label,
                     fontSize = 17.sp,
                     fontWeight = FontWeight.Medium,
-                    color = textColor
+                    color = textColor,
+                    textAlign = TextAlign.End,
                 )
             } else {
                 Text(

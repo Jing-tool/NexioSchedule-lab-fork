@@ -20,7 +20,8 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Text
+import androidx.compose.ui.text.style.TextAlign
+import com.haooz.chedule.ui.components.text.material.Text as Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -43,6 +44,7 @@ import com.haooz.chedule.ui.basic.OverlayDropdownMenu
 import top.yukonga.miuix.kmp.layout.SharedScrollBehavior
 import top.yukonga.miuix.kmp.layout.collapsibleTopInset
 import com.haooz.chedule.ui.utils.isAppDarkTheme
+import com.haooz.chedule.ui.utils.isIosPlatform
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.DropdownDefaults
@@ -72,7 +74,6 @@ fun WidgetIntroScreen(
     scrollBehavior: SharedScrollBehavior? = null,
     liquidGlassBackdrop: com.kyant.backdrop.Backdrop? = null,
     onRequestWidgetRefresh: () -> Unit = {},
-    isIos: Boolean = false,
 ) {
     val hapticFeedback = LocalHapticFeedback.current
     val isTablet = isTabletWidth()
@@ -151,16 +152,16 @@ fun WidgetIntroScreen(
                 ) {
                     FeatureItem("今日课程一目了然", "桌面显示当天课程、时间、地点和教师信息")
                     FeatureItem("明日课程提前预览", "开启次日课程提醒后，智能显示明日课程")
-                    FeatureItem("进行中课程高亮", if (isIos) "突出显示正在上课的课程和结束时间" else "正在上课的课程高亮显示剩余时间")
+                    FeatureItem("进行中课程高亮", if (isIosPlatform) "突出显示正在上课的课程和结束时间" else "正在上课的课程高亮显示剩余时间")
                     FeatureItem("智能显示状态", "智能提醒今日课程当前状态")
-                    if (isIos) {
+                    if (isIosPlatform) {
                         FeatureItem("跟随桌面外观", "支持浅色、深色与系统着色外观")
                     }
                 }
 
                 Spacer(modifier = Modifier.height(24.dp))
 
-                if (!isIos) {
+                if (!isIosPlatform) {
                     val repository = remember { CourseRepository() }
                     var paddingMode by remember { mutableIntStateOf(repository.getWidgetPaddingMode()) }
                     WidgetPaddingSelector(
@@ -393,7 +394,7 @@ private fun CourseCardPreview(
             }
             if (remaining != null) {
                 Spacer(modifier = Modifier.width(8.dp))
-                Text(remaining, fontSize = 14.sp, fontWeight = FontWeight.Medium, color = nowColor)
+                Text(remaining, fontSize = 14.sp, fontWeight = FontWeight.Medium, color = nowColor, textAlign = TextAlign.End)
             }
         }
     }

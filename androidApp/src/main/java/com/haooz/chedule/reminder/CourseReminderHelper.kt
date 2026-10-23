@@ -1691,10 +1691,11 @@ object CourseReminderHelper {
         val reminderPrefs = context.getSharedPreferences("course_reminder_prefs", Context.MODE_PRIVATE)
         val collapsedMode = reminderPrefs.getInt("live_right_mode", 0)
         val shortCriticalText = when (collapsedMode) {
-            0 -> courseName
-            1 -> classroom.ifEmpty { courseName }
+            // 缩略态只有十几个半角宽，课程名和地点都先按用户规则精简一手
+            0 -> reminderPrefs.shortCourse(courseName).ifEmpty { courseName }
+            1 -> reminderPrefs.shortClassroom(classroom).ifEmpty { courseName }
             2 -> "${minutesUntilStart}分钟"
-            else -> courseName
+            else -> reminderPrefs.shortCourse(courseName).ifEmpty { courseName }
         }
 
         val bigText = buildPreClassBigText(
@@ -1981,10 +1982,10 @@ object CourseReminderHelper {
         val lastDisplayedMinutes = prefs.getInt("last_displayed_minutes", -1)
         if (minutesUntilStart == lastDisplayedMinutes) return
         val shortCriticalText = when (collapsedMode) {
-            0 -> courseName
-            1 -> classroom.ifEmpty { courseName }
+            0 -> collapsedPrefs.shortCourse(courseName).ifEmpty { courseName }
+            1 -> collapsedPrefs.shortClassroom(classroom).ifEmpty { courseName }
             2 -> "${minutesUntilStart}分钟"
-            else -> courseName
+            else -> collapsedPrefs.shortCourse(courseName).ifEmpty { courseName }
         }
 
         val bigText = buildPreClassBigText(

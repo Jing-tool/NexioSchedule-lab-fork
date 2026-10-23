@@ -28,7 +28,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.material3.Text
+import androidx.compose.ui.text.style.TextAlign
+import com.haooz.chedule.ui.components.CardExpand
+import com.haooz.chedule.ui.components.text.material.Text as Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -270,15 +272,13 @@ private fun TabletPaneTopChrome(
     modifier: Modifier = Modifier,
 ) {
     val maskHeight = TabletPaneBlurHeight
-    // 取当前页 surface 色（设置页主题已锁应用主题，不随壁纸锁色/切页跳变）
-    val gradientColor = MiuixTheme.colorScheme.surface
 
     Box(
         modifier = modifier
             .fillMaxWidth()
             .height(maskHeight)
     ) {
-        // 渐变模糊：常驻
+        // 渐变模糊：常驻。不再叠表面色遮罩（压暗层已全局移除）
         if (backdrop != null) {
             ProgressiveBlurTopBar(
                 backdrop = backdrop,
@@ -288,22 +288,6 @@ private fun TabletPaneTopChrome(
                 content = {},
             )
         }
-        // 表面色遮罩：常驻
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .zIndex(1f)
-                .background(
-                    Brush.verticalGradient(
-                        0f to gradientColor.copy(alpha = 0.85f),
-                        0.45f to gradientColor.copy(alpha = 0.55f),
-                        0.7f to gradientColor.copy(alpha = 0.32f),
-                        0.85f to gradientColor.copy(alpha = 0.14f),
-                        0.93f to gradientColor.copy(alpha = 0.05f),
-                        1f to Color.Transparent,
-                    )
-                )
-        )
     }
 }
 
@@ -509,7 +493,7 @@ fun TabletSettingsScreen(
                                                 )
                                             }
                                         // 排班模式入口：并入「特色功能」分类，非排班模式时显示
-                                        if (group == TabletSettingsDest.Reminder.group && !isShiftMode) {
+                                        CardExpand(visible = group == TabletSettingsDest.Reminder.group && !isShiftMode) {
                                             ArrowPreference(
                                                 title = "排班模式",
                                                 summary = "同时对比多个课表的排班情况",
@@ -1159,7 +1143,8 @@ private fun TabletSemesterPane(
                             Text(
                                 text = classStartTime,
                                 fontSize = 14.5.sp,
-                                color = MiuixTheme.colorScheme.onSurfaceVariantActions
+                                color = MiuixTheme.colorScheme.onSurfaceVariantActions,
+                                textAlign = TextAlign.End,
                             )
                         },
                         onClick = {
@@ -1181,7 +1166,8 @@ private fun TabletSemesterPane(
                                     else -> "第${currentWeek}周"
                                 },
                                 fontSize = 14.5.sp,
-                                color = MiuixTheme.colorScheme.onSurfaceVariantActions
+                                color = MiuixTheme.colorScheme.onSurfaceVariantActions,
+                                textAlign = TextAlign.End,
                             )
                         },
                         onClick = {
@@ -1196,7 +1182,8 @@ private fun TabletSemesterPane(
                             Text(
                                 text = "共${totalWeeks}周",
                                 fontSize = 14.5.sp,
-                                color = MiuixTheme.colorScheme.onSurfaceVariantActions
+                                color = MiuixTheme.colorScheme.onSurfaceVariantActions,
+                                textAlign = TextAlign.End,
                             )
                         },
                         onClick = {
@@ -1211,7 +1198,7 @@ private fun TabletSemesterPane(
                         checked = smartWeekend,
                         onCheckedChange = { settingsViewModel.setSmartWeekend(it) }
                     )
-                    if (!isShiftMode) {
+                    CardExpand(visible = !isShiftMode) {
                         SwitchPreference(
                             title = "显示非本周课程",
                             checked = showNonCurrentWeek,

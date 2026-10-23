@@ -14,7 +14,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.material3.Text
+import com.haooz.chedule.ui.components.text.material.Text as Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -256,7 +256,8 @@ fun CourseTimeSettingsScreen(
                                                         "生效中",
                                                         fontSize = 12.sp,
                                                         fontWeight = FontWeight.Medium,
-                                                        color = MiuixTheme.colorScheme.primary
+                                                        color = MiuixTheme.colorScheme.primary,
+                                                        textAlign = TextAlign.End,
                                                     )
                                                 }
                                             }
@@ -378,7 +379,8 @@ fun CourseTimeSettingsScreen(
                             text = label,
                             style = MiuixTheme.textStyles.footnote1,
                             color = MiuixTheme.colorScheme.onSurfaceVariantActions,
-                            modifier = Modifier.padding(top = 4.dp, bottom = 12.dp)
+                            modifier = Modifier.padding(top = 4.dp, bottom = 12.dp),
+                            textAlign = TextAlign.Center,
                         )
                         NumberPicker(
                             value = current,

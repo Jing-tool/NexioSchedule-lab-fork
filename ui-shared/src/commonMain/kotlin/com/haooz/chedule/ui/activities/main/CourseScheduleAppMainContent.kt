@@ -4,6 +4,8 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.EnterExitState
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloat
@@ -37,6 +39,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
@@ -106,6 +109,7 @@ import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.colorControls
 import com.kyant.backdrop.isRenderEffectSupported
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.datetime.Clock
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
@@ -118,6 +122,16 @@ import top.yukonga.miuix.kmp.utils.MiuixPopupUtils.Companion.MiuixPopupHost
 import kotlin.math.abs
 import kotlin.time.Duration.Companion.milliseconds
 import com.kyant.backdrop.backdrops.layerBackdrop as liquidGlassLayerBackdrop
+
+/**
+ * 「更多」菜单收起动画播到这个 fraction 就摘掉「比底栏更高一层」的采样层。
+ * 0.5 = 面板缩到一半、还在动的时候换层；等动画播完再换，按钮已经静止在右上角，
+ * 玻璃里少掉顶栏/底栏那一层会当场跳一下。
+ */
+private const val MENU_GLASS_RELEASE_FRACTION = 0.5f
+
+/** 其余弹窗：退场动画（最长约 320ms）播完再摘采样层，那时屏幕上已经没有它的玻璃了 */
+private const val OVERLAY_GLASS_RELEASE_DELAY_MS = 420L
 
 /**
  * 课表主界面「主内容层」：整屏 Box + graphicsLayer 模糊/裁切 + Scaffold 内容。
@@ -142,7 +156,29 @@ internal fun CourseScheduleAppMainContent(
         // 连贯动画期间下层的实时模糊半径（dp）：长按菜单优先，其次详情 morph；与宿主侧口径一致
         fun currentDetailBlurDp(): Float =
             if (shortcutMenuBlurRadius.value > 0.01f) shortcutMenuBlurRadius.value
+            // 宿主已自己压一层系统 material（iOS）：主内容不再叠第二层。
+            // 长按菜单不走宿主，仍在上面那支里自糊。
+            else if (hostNavigation?.ownsDetailBackdropBlur == true) 0f
             else managePageBlurRadius.value
+
+        // 顶栏/底栏那两层采样层的重录谓词。⚠️ 不能复用 liquidGlassMustRecord：那份闭包里
+        // 带着 rail 强制续录的帧计数与「侧栏进度是否还在动」的比较状态，两个节点各调一次
+        // 会把计数双倍扣掉、把 expandMoving 判成 false。这两层只跟滚动，自己另起一份。
+        val chromeBarMustRecord = remember(
+            scheduleScrollState,
+            todayListScrollInProgress,
+            pagerState,
+            todayPagerState,
+            mainPagerState,
+        ) {
+            {
+                scheduleScrollState.isScrollInProgress ||
+                        todayListScrollInProgress.value ||
+                        pagerState.isScrollInProgress ||
+                        todayPagerState.isScrollInProgress ||
+                        mainPagerState.isScrollInProgress
+            }
+        }
 
         // 主内容（带模糊和裁切）
         // 空闲态不挂 graphicsLayer：全屏离屏合成是周滑 P50 主头之一。
@@ -157,7 +193,10 @@ internal fun CourseScheduleAppMainContent(
                         showCustomizePage ||
                         mainContentAlpha != 1f ||
                         shortcutMenuBlurRadius.value > 0.01f ||
-                        managePageBlurRadius.value > 0.01f ||
+                        // 宿主接管页面级模糊时，这个半径不会再产生 renderEffect，
+                        // 别为它白开一层全屏离屏合成
+                        (managePageBlurRadius.value > 0.01f &&
+                                hostNavigation?.ownsDetailBackdropBlur != true) ||
                         cutoutMainScale.value != 1f ||
                         customizeExitScale.value != 1f ||
                         sheetOffsetY.value != 0f
@@ -250,6 +289,48 @@ internal fun CourseScheduleAppMainContent(
             val nativeBarInset = (hostNav?.topBarInset ?: 0.0).dp
             // 右侧避让量：右下角竖排的原生 tab bar 占的空间（折叠屏 iPhone 折叠态）。
             val titleEndPadding = (hostNav?.rightSafeAreaInset ?: 0.0).toFloat().dp
+            // 顶栏/底栏那两层录制**按需挂载**：只有真的有浮层在采「比底栏更高一层」的采样层时
+            // 才挂上，否则滚动帧里会白白多录两条全宽条带。
+            // ⚠️ Scaffold 先组 popup → 顶栏 → 底栏，**最后**才组 content，所以这里要读的
+            // 开关不能是 content 槽里的局部量（那时顶栏/底栏已经组完了）。
+            // 这两个 collectAsState 因此提前到 Scaffold 之外订阅。
+            val showJumpWeekDialog by viewModel.showJumpWeekDialog.collectAsState()
+            val showAddDialog by viewModel.showAddDialog.collectAsState()
+            var notice by remember { mutableStateOf<Notice?>(null) }
+            var updateDialogShowing by remember { mutableStateOf(false) }
+            val menuGlassWanted = showMorePopup || showTodayMorePopup
+            val otherGlassWanted = showJumpWeekDialog ||
+                showAddDialog ||
+                notice != null ||
+                sharedFileIntent != null ||
+                showDeleteConfirmDialog ||
+                showPasteRangeDialog ||
+                showRescheduleConflictDialog ||
+                updateDialogShowing
+            // 菜单单独一路：它有明确的收起进度（fraction）可以跟
+            var menuGlassActive by remember { mutableStateOf(menuGlassWanted) }
+            // 挂上要**同帧生效**（展开第一帧玻璃就得多采到顶栏），所以在组合期直接写
+            if (menuGlassWanted && !menuGlassActive) menuGlassActive = true
+            LaunchedEffect(menuGlassWanted) {
+                if (menuGlassWanted) return@LaunchedEffect
+                // 摘掉的时机在**收起动画播到一半**时：面板还在缩，眼睛在看运动，
+                // 采样层换一层看不出来。等动画播完再摘就晚了 —— 那时按钮已经静止在
+                // 右上角，玻璃里少掉顶栏那一层会当场跳一下。
+                snapshotFlow {
+                    maxOf(morePopupFraction.value, todayMorePopupFraction.value)
+                }.first { it <= MENU_GLASS_RELEASE_FRACTION }
+                menuGlassActive = false
+            }
+            // 其余弹窗一路：退场动画播完屏幕上已经没有它的玻璃了，
+            // 什么时候摘都看不见，按固定延时摘即可
+            var otherGlassActive by remember { mutableStateOf(otherGlassWanted) }
+            if (otherGlassWanted && !otherGlassActive) otherGlassActive = true
+            LaunchedEffect(otherGlassWanted) {
+                if (otherGlassWanted) return@LaunchedEffect
+                delay(OVERLAY_GLASS_RELEASE_DELAY_MS)
+                otherGlassActive = false
+            }
+            val overlayGlassActive = menuGlassActive || otherGlassActive
             val scaffoldContent = @Composable {
                 Scaffold(
                     modifier = Modifier
@@ -266,13 +347,28 @@ internal fun CourseScheduleAppMainContent(
                     bottomBar = {
                         // 平板导航在叠层；这里不占 Scaffold bottomBar，避免全屏挡住内容滚动
                         if (navBarStyle != "rail" && !nativeBottomBar) {
-                            ScheduleBottomBar(
-                                navBarStyle = navBarStyle,
-                                isShiftMode = isShiftMode,
-                                selectedTab = selectedTab,
-                                onTabSelected = onMainTabSelected,
-                                liquidGlassBackdrop = chromeBackdrop,
-                            )
+                            // 底栏再录一层：弹窗层的玻璃（下拉菜单 / OverlayDialog）要采到它。
+                            // 只在真有浮层在采时挂——没挂时 backdrop.layerCoordinates 恒 null，
+                            // 组合采样自动退化成「只有内容」那一层，即收起态的行为。
+                            Box(
+                                modifier = if (overlayGlassActive) {
+                                    Modifier.liquidGlassLayerBackdrop(
+                                        backdrop = bottomBarSampleBackdrop,
+                                        recordKey = liquidGlassRecordKey,
+                                        mustRecord = chromeBarMustRecord,
+                                    )
+                                } else {
+                                    Modifier
+                                }
+                            ) {
+                                ScheduleBottomBar(
+                                    navBarStyle = navBarStyle,
+                                    isShiftMode = isShiftMode,
+                                    selectedTab = selectedTab,
+                                    onTabSelected = onMainTabSelected,
+                                    liquidGlassBackdrop = chromeBackdrop,
+                                )
+                            }
                         }
                     },
                     topBar = {
@@ -313,7 +409,24 @@ internal fun CourseScheduleAppMainContent(
                                 }
                             }
                         }
-                        Box(modifier = Modifier.fillMaxWidth()) {
+                        // 顶栏同样再录一层：下拉菜单挂在它下面、OverlayDialog 也会压到它，
+                        // 两者的采样层要「比底栏还高一层」，即内容 + 顶栏 + 底栏
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .then(
+                                    // 同底栏：按需挂载，没挂载时组合采样自动退化成内容层
+                                    if (overlayGlassActive) {
+                                        Modifier.liquidGlassLayerBackdrop(
+                                            backdrop = topBarSampleBackdrop,
+                                            recordKey = liquidGlassRecordKey,
+                                            mustRecord = chromeBarMustRecord,
+                                        )
+                                    } else {
+                                        Modifier
+                                    }
+                                )
+                        ) {
                             if (showScheduleTitle) {
                                 val scheduleTitleIndex = if (isShiftMode) 0 else 1
                                 // 空闲停在本页时 delta=0：不挂 graphicsLayer，免掉顶栏整棵离屏合成。
@@ -531,7 +644,7 @@ internal fun CourseScheduleAppMainContent(
                                 moreSlotTopPx = moreSlotTopPx,
                                 scheduleMaterialAlpha = scheduleMaterialAlpha.value,
                                 todayMaterialAlpha = todayMaterialAlpha.value,
-                                liquidGlassBackdrop = liquidGlassBackdrop,
+                                liquidGlassBackdrop = overlayGlassBackdrop,
                                 isShiftMode = isShiftMode,
                                 // 平板（rail）右上角不显示「更多」：跳转/管理/外观都在侧栏里。
                                 // iOS 主界面右上角那颗已由原生 UIMenu 接管，Compose 侧恒不渲染
@@ -796,7 +909,7 @@ internal fun CourseScheduleAppMainContent(
                                                                 settingsViewModel = settingsViewModel,
                                                                 pagerState = pagerState,
                                                                 hiddenCourseIds = hiddenCourseIds,
-                                                                draggingCourseIds = draggingCourseIds,
+                                                                draggingCourseSlots = draggingCourseSlots,
                                                                 onCourseClick = { courses, left, top, width, height, cardLayer, courseIdToHide, targetWeek ->
                                                                     openCourseDetail(
                                                                         courses,
@@ -841,7 +954,8 @@ internal fun CourseScheduleAppMainContent(
                                                                     floatingCardVisible = true
                                                                     // 新一轮长按：还没开始拖，高光先关
                                                                     isFloatingCardDragging = false
-                                                                    draggingCourseIds = setOf(course.id)
+                                                                    draggingCourseSlots =
+                                                                        setOf(course.id to currentWeek)
                                                                     draggedCardCourse = course
                                                                     draggedWeek = currentWeek
                                                                     // 跨午休/晚修课以整课视觉几何为锚点，避免长按在分段卡片上时中心偏移
@@ -930,6 +1044,13 @@ internal fun CourseScheduleAppMainContent(
                                                                     }
                                                                 },
                                                                 onCourseDrag = { _, offsetX, offsetY ->
+                                                                    // 跨周调课：卡片停在屏幕左右边缘热区 → 自动翻周
+                                                                    updateEdgeAutoPage(
+                                                                        fingerX = draggedCardPosition.x + offsetX,
+                                                                        // 必须真拖起来（isFloatingCardDragging）才判热区：
+                                                                        // 刚进拖拽态时卡片还在原位，最右列离屏边不到 40dp
+                                                                        enabled = isFloatingCardDragging && !isPasteFlight
+                                                                    )
                                                                     // 跟手 1:1；offset 只进 graphicsLayer，速度进 holder
                                                                     val now = monotonicNow()
                                                                     if (dragMotion.lastTimeMs != 0L) {
@@ -947,60 +1068,29 @@ internal fun CourseScheduleAppMainContent(
                                                                     dragMotion.lastOffsetY = offsetY
                                                                     floatingOffsetX.floatValue = offsetX
                                                                     floatingOffsetY.floatValue = offsetY
-                                                                    // 落点仅跨格时写 state，避免逐帧重组课表
-                                                                    val course = draggedCardCourse
-                                                                    if (course != null) {
-                                                                        val geomNow = gridGeometry
-                                                                        val sectionH =
-                                                                            geomNow?.sectionHeightPx
-                                                                                ?: 0f
-                                                                        val sectionCount =
-                                                                            course.endSection - course.startSection + 1
-                                                                        // 必须与浮层卡片用同一套高度（含分界缝与特殊块挤占）：写死
-                                                                        // sectionCount * sectionH 会让「起始节次中心」算偏，落点命中与高亮错开一节。
-                                                                        val cardHeightPx = when {
-                                                                            course.hasValidCustomTime() -> draggedCardSize.y
-                                                                            geomNow != null -> courseVisualHeightPx(
-                                                                                geomNow,
-                                                                                course.startSection,
-                                                                                course.endSection,
-                                                                                dividerPxFor(geomNow),
-                                                                            )
-
-                                                                            else -> sectionCount * sectionH
-                                                                        }
-                                                                        val centerX =
-                                                                            draggedCardPosition.x + offsetX
-                                                                        val cardTopY =
-                                                                            draggedCardPosition.y + offsetY - cardHeightPx / 2f
-                                                                        val firstSectionCenterY =
-                                                                            cardTopY + sectionH / 2f
-                                                                        val rawTarget =
-                                                                            computeDropTarget(
-                                                                                centerX,
-                                                                                firstSectionCenterY
-                                                                            )
-                                                                        // 放不下的格子不给落点（与粘贴路径同款校验）：起始节次+跨度
-                                                                        // 超过总节次时松手会写出 endSection > totalSections 的课，渲染溢出/错位。
-                                                                        val newTarget =
-                                                                            rawTarget?.takeIf {
-                                                                                it.second + sectionCount - 1 <= totalSections
-                                                                            }
-                                                                        if (newTarget != pendingDropTarget) {
-                                                                            pendingDropTarget =
-                                                                                newTarget
-                                                                        }
-                                                                    }
+                                                                    // 落点按浮层中心对网格算（仅跨格时写 state，避免逐帧重组课表）
+                                                                    refreshPendingDropTarget()
                                                                 },
                                                                 onCourseDragEnd = { _ ->
+                                                                    // 浮层可能已经被别的路径收掉（返回键 / 点空白 / 切页）：
+                                                                    // 这次松手只收尾，不按残留落点写库
+                                                                    val dropAborted = !isFloatingCardDragging
                                                                     // 手指已离开：高光立刻开始淡出，不等下面的退场动画
                                                                     isFloatingCardDragging = false
+                                                                    stopEdgeAutoPage()
+                                                                    // 翻周/滚动后几何可能已换页：落点按最新几何重算一次，
+                                                                    // 否则松手会落到上一页的格子（跨周写错周）
+                                                                    refreshPendingDropTarget()
                                                                     // 只结束拖拽浮层；菜单关闭交给 onCourseMenuDismiss
-                                                                    val source = draggedCardCourse
+                                                                    val source = if (dropAborted) null else draggedCardCourse
                                                                     val target = pendingDropTarget
                                                                     val week = draggedWeek
                                                                     pendingDropTarget = null
-                                                                    if (source != null && target != null) {
+                                                                    // 翻周动画还在跑时落点仍属于上一页：此时写库会写进错的周，
+                                                                    // 宁可吸回原位让用户重拖
+                                                                    if (source != null && target != null &&
+                                                                        !pagerState.isScrollInProgress
+                                                                    ) {
                                                                         // 列 → 数据坐标：调课日列显示的是 followWeekday/followWeek 的课，
                                                                         // 冲突检测与写库都必须落在数据坐标上，几何/动画仍用列
                                                                         val (targetDay, targetWeek) =
@@ -1038,7 +1128,7 @@ internal fun CourseScheduleAppMainContent(
                                                                                     targetWeek
                                                                                 )
                                                                                 // 单周调课可能拆分/合并出新 id，按目标位重收并隐藏防叠影
-                                                                                draggingCourseIds =
+                                                                                draggingCourseSlots =
                                                                                     viewModel.getCoursesAtSlot(
                                                                                         targetWeek,
                                                                                         targetDay,
@@ -1050,7 +1140,7 @@ internal fun CourseScheduleAppMainContent(
                                                                                                 targetWeek
                                                                                             )
                                                                                         }
-                                                                                        .map { it.id }
+                                                                                        .map { it.id to targetWeek }
                                                                                         .toSet()
                                                                                 snapFloatingCardToTarget(
                                                                                     target.first,
@@ -1085,6 +1175,9 @@ internal fun CourseScheduleAppMainContent(
                                                                                     conflicts.first()
                                                                                 pendingDropTarget =
                                                                                     target.first to targetStart
+                                                                                // 新冲突从第一步开始，清掉上一轮可能残留的两步状态
+                                                                                pendingConflictResolution = null
+                                                                                conflictConfirmResolution = null
                                                                                 showRescheduleConflictDialog =
                                                                                     true
                                                                                 val hoverTargetCenter =
@@ -1195,7 +1288,7 @@ internal fun CourseScheduleAppMainContent(
                                                                                             false
                                                                                         floatingCardVisible =
                                                                                             false
-                                                                                        draggingCourseIds =
+                                                                                        draggingCourseSlots =
                                                                                             emptySet()
                                                                                         floatingOffsetX.floatValue =
                                                                                             0f
@@ -1208,13 +1301,23 @@ internal fun CourseScheduleAppMainContent(
                                                                             snapFloatingCardToOrigin()
                                                                         }
                                                                     } else if (source != null) {
-                                                                        // 无落点：松手在网格外 / 超出总节次 / 落到重组休课日
+                                                                        // 无落点：松手在网格外 / 超出总节次 / 落到重组休课日 /
+                                                                        // 翻周还在滑（落点属于上一页）
                                                                         // → 与「同格」一样吸回原位，不凭空消失
                                                                         stopConflictHover()
                                                                         snapFloatingCardToOrigin()
                                                                     } else {
                                                                         dismissFloatingCard()
                                                                     }
+                                                                },
+                                                                onCourseDragCancel = { _ ->
+                                                                    // 课卡所在周页被 pager 回收 / 手势被系统抢走：
+                                                                    // 手指已经跟丢了，绝不能按最后的落点写库。
+                                                                    isFloatingCardDragging = false
+                                                                    stopEdgeAutoPage()
+                                                                    pendingDropTarget = null
+                                                                    stopConflictHover()
+                                                                    dismissFloatingCard()
                                                                 },
                                                                 wallpaperBitmap = if (showCustomizePage && !isWindowCutoutActive) originalWallpaperImage else wallpaperImage,
                                                                 wallpaperOffset = if (showCustomizePage && !isWindowCutoutActive) originalWallpaperOffset else wallpaperOffset,
@@ -1232,6 +1335,13 @@ internal fun CourseScheduleAppMainContent(
                                                                 liquidGlassBackdrop = liquidGlassBackdrop,
                                                                 onGridGeometryChange = { geom ->
                                                                     gridGeometry = geom
+                                                                    // 翻周停下 / 页内滚停后几何换页：浮层没动，
+                                                                    // 但它底下的格子变了，落点必须跟着重算。
+                                                                    // 只在真拖着时算：长按刚弹菜单还没拖，
+                                                                    // 重算会把落点高亮提前画出来。
+                                                                    if (isFloatingCardDragging) {
+                                                                        refreshPendingDropTarget()
+                                                                    }
                                                                 },
                                                                 dropHighlight = run {
                                                                     val emptyTarget =
@@ -1506,6 +1616,7 @@ internal fun CourseScheduleAppMainContent(
                                 },
                             )
                         }
+
                     }
 
                     // 宿主把分享 Intent 摊平成 SharedFileIntent，并提供读该 uri 全文的回调。
@@ -1516,16 +1627,16 @@ internal fun CourseScheduleAppMainContent(
                         courseViewModel = viewModel,
                         scheduleViewModel = scheduleViewModel,
                         settingsViewModel = settingsViewModel,
-                        liquidGlassBackdrop = liquidGlassBackdrop,
+                        liquidGlassBackdrop = overlayGlassBackdrop,
                     )
 
                     // 更新能力（检查/下载/校验/安装）由宿主注入
                     UpdateDialog(
                         updateController = updateController ?: NoopUpdateController,
-                        liquidGlassBackdrop = liquidGlassBackdrop,
+                        liquidGlassBackdrop = overlayGlassBackdrop,
+                        onShowChanged = { updateDialogShowing = it },
                     )
 
-                    val showJumpWeekDialog by viewModel.showJumpWeekDialog.collectAsState()
                     var jumpWeekTemp by remember { mutableIntStateOf(1) }
                     val hapticFeedback = LocalHapticFeedback.current
                     LaunchedEffect(showJumpWeekDialog) {
@@ -1536,7 +1647,7 @@ internal fun CourseScheduleAppMainContent(
                     OverlayDialog(
                         title = "跳转周数",
                         show = showJumpWeekDialog,
-                        liquidGlassBackdrop = liquidGlassBackdrop,
+                        liquidGlassBackdrop = overlayGlassBackdrop,
                         onDismissRequest = { viewModel.hideJumpWeekDialog() }
                     ) {
                         Column(
@@ -1583,7 +1694,6 @@ internal fun CourseScheduleAppMainContent(
                         }
                     }
 
-                    val showAddDialog by viewModel.showAddDialog.collectAsState()
                     val editingCourse by viewModel.editingCourse.collectAsState()
                     val selectedStartSection by viewModel.selectedStartSection.collectAsState()
                     val selectedEndSection by viewModel.selectedEndSection.collectAsState()
@@ -1602,7 +1712,7 @@ internal fun CourseScheduleAppMainContent(
                                 show = showAddDialog,
                                 course = editingCourse,
                                 selectedDay = viewModel.selectedDay.collectAsState().value,
-                                liquidGlassBackdrop = liquidGlassBackdrop,
+                                liquidGlassBackdrop = overlayGlassBackdrop,
                                 totalWeeks = totalWeeks,
                                 totalSections = totalSections,
                                 defaultStartSection = editingStartSection,
@@ -1638,14 +1748,14 @@ internal fun CourseScheduleAppMainContent(
                         course = deleteConfirmCourse,
                         week = draggedWeek,
                         viewModel = viewModel,
-                        liquidGlassBackdrop = liquidGlassBackdrop,
+                        liquidGlassBackdrop = overlayGlassBackdrop,
                         hapticFeedback = hapticFeedback,
                         onDismiss = { showDeleteConfirmDialog = false },
                     )
                     PasteRangeDialog(
                         show = showPasteRangeDialog,
                         courseName = copiedCourseForPaste?.name ?: "",
-                        liquidGlassBackdrop = liquidGlassBackdrop,
+                        liquidGlassBackdrop = overlayGlassBackdrop,
                         hapticFeedback = hapticFeedback,
                         onPaste = { allWeeks ->
                             val meta = copiedCourseForPaste
@@ -1722,8 +1832,40 @@ internal fun CourseScheduleAppMainContent(
                             pasteRangeTarget = null
                         },
                     )
+                    // 第一步：只选处理方式。竖排按钮；覆盖/交换不直接写库，
+                    // 等本弹窗退出动画结束（onDismissFinished）再开第二步确认弹窗。
                     RescheduleConflictDialog(
                         show = showRescheduleConflictDialog,
+                        liquidGlassBackdrop = overlayGlassBackdrop,
+                        hapticFeedback = hapticFeedback,
+                        onCancel = {
+                            pendingConflictResolution = null
+                            conflictConfirmResolution = null
+                            showRescheduleConflictDialog = false
+                            pendingConflictCourse = null
+                            // 取消 = 不落课，浮层按相邻页锚点飞回源周方向
+                            flyFloatingCardHome()
+                        },
+                        onChooseOverwrite = {
+                            pendingConflictResolution = ConflictResolution.OVERWRITE
+                            showRescheduleConflictDialog = false
+                        },
+                        onChooseSwap = {
+                            pendingConflictResolution = ConflictResolution.SWAP
+                            showRescheduleConflictDialog = false
+                        },
+                        onDismissFinished = {
+                            val resolution = pendingConflictResolution
+                            if (resolution != null) {
+                                pendingConflictResolution = null
+                                conflictConfirmResolution = resolution
+                            }
+                        },
+                    )
+                    // 第二步：写明覆盖/交换的具体操作，确认后才写库。
+                    RescheduleConflictConfirmDialog(
+                        show = conflictConfirmResolution != null,
+                        resolution = conflictConfirmResolution ?: ConflictResolution.OVERWRITE,
                         source = draggedCardCourse,
                         target = pendingConflictCourse,
                         // 写库走数据坐标；flyFloatingCardToDropTarget 仍读列坐标算几何
@@ -1735,16 +1877,19 @@ internal fun CourseScheduleAppMainContent(
                         } ?: draggedWeek,
                         draggedWeek = draggedWeek,
                         viewModel = viewModel,
-                        liquidGlassBackdrop = liquidGlassBackdrop,
+                        liquidGlassBackdrop = overlayGlassBackdrop,
                         hapticFeedback = hapticFeedback,
                         onCancel = {
-                            showRescheduleConflictDialog = false
-                            pendingConflictCourse = null
+                            // 只关弹窗；pendingConflictCourse 留到退出动画结束再清，
+                            // 否则关闭过程中 summary 会突然变成“确定要执行此操作吗”
+                            conflictConfirmResolution = null
+                            pendingConflictResolution = null
                             flyFloatingCardHome()
                         },
                         onOverwriteResolved = {
-                            showRescheduleConflictDialog = false
-                            pendingConflictCourse = null
+                            // 同上：数据留到 onDismissFinished 再清，保证退出时文案稳定
+                            conflictConfirmResolution = null
+                            pendingConflictResolution = null
                             val source = draggedCardCourse
                             val target = pendingDropTarget
                             if (source != null && target != null) {
@@ -1753,17 +1898,17 @@ internal fun CourseScheduleAppMainContent(
                                 val atTarget = viewModel.getCoursesAtSlot(
                                     targetWeek, targetDay, target.second, target.second + span
                                 )
-                                draggingCourseIds = atTarget
+                                draggingCourseSlots = atTarget
                                     .filter { it.isActiveInWeek(targetWeek) }
-                                    .map { it.id }
+                                    .map { it.id to targetWeek }
                                     .toSet()
                             }
                             flyFloatingCardToDropTarget()
                         },
                         onSwapResolved = {
-                            showRescheduleConflictDialog = false
+                            conflictConfirmResolution = null
+                            pendingConflictResolution = null
                             val conflict = pendingConflictCourse
-                            pendingConflictCourse = null
                             val source = draggedCardCourse
                             val target = pendingDropTarget
                             val week = draggedWeek
@@ -1777,9 +1922,9 @@ internal fun CourseScheduleAppMainContent(
                                 val atSource = viewModel.getCoursesAtSlot(
                                     week, source.dayOfWeek, source.startSection, source.endSection
                                 ).filter { it.isActiveInWeek(week) }
-                                draggingCourseIds = (atTarget + atSource)
-                                    .map { it.id }
-                                    .toSet()
+                                draggingCourseSlots =
+                                    (atTarget.map { it.id to targetWeek } +
+                                            atSource.map { it.id to week }).toSet()
                             }
                             if (conflict != null) {
                                 flySwapCards(conflict)
@@ -1801,9 +1946,15 @@ internal fun CourseScheduleAppMainContent(
                                 animateInCourseIds = emptySet()
                             }
                         },
+                        onDismissFinished = {
+                            // 弹窗完全退出后再清冲突数据：退出动画期间文案不变
+                            pendingConflictCourse = null
+                            pendingConflictResolution = null
+                            conflictConfirmResolution = null
+                        },
                     )
                     // 节点常驻组合树、仅 show 控显隐，退出动画才能播完
-                    var notice by remember { mutableStateOf<Notice?>(null) }
+                    // ⚠ notice 的声明在 Scaffold 之外（采样层开关要先读它）
                     LaunchedEffect(privacyConsented) {
                         // 合规：未同意隐私政策前不拉取公告（不触网）
                         if (!privacyConsented) return@LaunchedEffect
@@ -1816,7 +1967,7 @@ internal fun CourseScheduleAppMainContent(
                         title = notice?.title,
                         summary = notice?.content?.ifBlank { null },
                         show = notice != null,
-                        liquidGlassBackdrop = liquidGlassBackdrop,
+                        liquidGlassBackdrop = overlayGlassBackdrop,
                         onDismissRequest = { notice = null },
                         onDismissFinished = { notice = null }
                     ) {

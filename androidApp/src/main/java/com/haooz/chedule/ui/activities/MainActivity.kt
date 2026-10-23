@@ -258,6 +258,10 @@ class MainActivity : ComponentActivity() {
                     mutableStateOf(PrivacyConsent.hasConsented())
                 }
                 val router = rememberAppRouter()
+                // 《隐私政策》全文页在栈上时，把隐私弹窗让开：它挂在 AppNavHost 之上，
+                // 遮罩不撤的话全文页读不了也滑不动（见 PrivacyConsentScreen）
+                val policyPageVisible =
+                    router.routes.any { it == com.haooz.chedule.ui.navigation.AppRoute.PrivacyPolicy }
                 // 主界面（常驻底座，不在 AppNavHost 的 AnimatedContent 里）的首层转场进度。
                 // 栈被 rememberSaveable 恢复成非空时（旋转 / 进程重建），主界面应已是「被盖住」的 1，
                 // 不能从 0 起步白播一次进入动画。
@@ -295,7 +299,8 @@ class MainActivity : ComponentActivity() {
                                 onDecline = { finish() },
                                 onOpenPolicy = {
                                     router.navigate(com.haooz.chedule.ui.navigation.AppRoute.PrivacyPolicy)
-                                }
+                                },
+                                policyPageVisible = policyPageVisible,
                             )
                         }
                     }
@@ -435,9 +440,13 @@ private fun computeWallpaperIsLight(bitmap: android.graphics.Bitmap?): Boolean? 
 }
 
 /**
- * 按屏幕长短边降采样解码相册选图。
+ * 按屏幕宽高降采样解码相册选图（cover 口径：缩后仍覆盖屏幕，只缩不扩）。
  * 相册原图可达 50MP+，全尺寸 ARGB_8888 解码是选壁纸路径 OOM 的主因。
  * 部分机型/云相册 URI 一次 open 不稳，先落到缓存文件再解码。
+ *
+ * ⚠ target 是**方向感知**的 (宽, 高)：曾经在这里转成屏幕长短边，横图高度被砍到
+ * 屏宽，竖屏 cover 显示时放大发虚。与保存侧 [com.haooz.chedule.data.WallpaperStore]
+ * 的 cover 策略同口径。
  */
 private fun decodeWallpaperSampled(
     context: Context,
@@ -445,8 +454,8 @@ private fun decodeWallpaperSampled(
     screenWPx: Float,
     screenHPx: Float,
 ): android.graphics.Bitmap? {
-    val targetW = maxOf(screenWPx, screenHPx).toInt().coerceAtLeast(1)
-    val targetH = minOf(screenWPx, screenHPx).toInt().coerceAtLeast(1)
+    val targetW = screenWPx.toInt().coerceAtLeast(1)
+    val targetH = screenHPx.toInt().coerceAtLeast(1)
 
     fun sampleSizeFromBounds(outW: Int, outH: Int): Int {
         var sample = 1
@@ -459,20 +468,21 @@ private fun decodeWallpaperSampled(
     fun downscaleIfNeeded(decoded: android.graphics.Bitmap?): android.graphics.Bitmap? {
         decoded ?: return null
         if (decoded.width <= 0 || decoded.height <= 0) return null
-        if (decoded.width > targetW * 2 || decoded.height > targetH * 2) {
-            val scale = minOf(
-                targetW.toFloat() / decoded.width,
-                targetH.toFloat() / decoded.height,
-            )
-            val scaled = decoded.scale(
-                (decoded.width * scale).toInt().coerceAtLeast(1),
-                (decoded.height * scale).toInt().coerceAtLeast(1),
-                true,
-            )
-            if (scaled !== decoded) decoded.recycle()
-            return scaled
-        }
-        return decoded
+        // cover：按「缩后仍覆盖屏幕」的倍率缩（max）。用 fit（min）会把横图砍到
+        // 屏宽以内 —— 方向感知 target 下 4000×3000 会被 min(1256/4000, 2760/3000)
+        // 缩成 1256×942，比保存侧再缩还小，显示放大近 3 倍，比不修更糊。
+        val cover = maxOf(
+            targetW / decoded.width.toFloat(),
+            targetH / decoded.height.toFloat(),
+        )
+        if (cover >= 1f) return decoded
+        val scaled = decoded.scale(
+            (decoded.width * cover).toInt().coerceAtLeast(1),
+            (decoded.height * cover).toInt().coerceAtLeast(1),
+            true,
+        )
+        if (scaled !== decoded) decoded.recycle()
+        return scaled
     }
 
     // 1) 直接 URI 解码

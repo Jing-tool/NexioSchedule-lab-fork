@@ -17,7 +17,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Text
+import com.haooz.chedule.ui.components.text.material.Text as Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.compositionLocalOf
@@ -50,6 +50,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -138,6 +139,8 @@ fun CourseCard(
     onDragStart: () -> Unit = {},
     onDrag: (offsetX: Float, offsetY: Float) -> Unit = { _, _ -> },
     onDragEnd: () -> Unit = {},
+    /** 拖拽被系统/布局回收打断（不是用户松手）：只收浮层，不写库 */
+    onDragCancel: () -> Unit = {},
     onMenuDismiss: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
@@ -333,9 +336,9 @@ fun CourseCard(
                 remember(surfaceColor) {
                     { drawRect(surfaceColor) }
                 }
-            val outlineColor = remember(cardColor) { cardColor.copy(alpha = 0.05f) }
-            val outlineStroke = remember(localDensity) {
-                Stroke(with(localDensity) { 2.dp.toPx() })
+            val outlineColor = remember(cardColor, isDark) { scheduleOutlineColor(cardColor, isDark) }
+            val outlineWidthPx = remember(localDensity) {
+                with(localDensity) { SCHEDULE_OUTLINE_WIDTH.toPx() }
             }
             val outlineCache = remember { OutlineCache() }
             // 静止卡不挂 graphicsLayer：几十张×两页的合成层是周滑 draw 热点
@@ -396,28 +399,18 @@ fun CourseCard(
                     )
                     .drawWithContent {
                         drawContent()
-                        val radiusDp = effectiveCornerRadius.dp
-                        if (outlineCache.width != size.width ||
-                            outlineCache.height != size.height ||
-                            outlineCache.radius != radiusDp.value ||
-                            outlineCache.layoutDirection != layoutDirection
-                        ) {
-                            outlineCache.outline = ContinuousRoundedRectangle(radiusDp)
-                                .createOutline(size, layoutDirection, this)
-                            outlineCache.width = size.width
-                            outlineCache.height = size.height
-                            outlineCache.radius = radiusDp.value
-                            outlineCache.layoutDirection = layoutDirection
-                        }
-                        drawOutline(
-                            outline = outlineCache.outline!!,
+                        drawScheduleOutline(
+                            cache = outlineCache,
+                            cornerRadius = effectiveCornerRadius.dp,
                             color = outlineColor,
-                            style = outlineStroke
+                            strokeWidthPx = outlineWidthPx,
+                            layoutDirection = layoutDirection,
                         )
                     }
                     .courseCardGesture(
                         course = course,
                         touchState = touchState,
+                        coordinates = cardCoords,
                         bounds = cardBoundsPx,
                         refreshBounds = refreshCardBounds,
                         scope = scope,
@@ -428,6 +421,7 @@ fun CourseCard(
                         onDragStart = onDragStart,
                         onDrag = onDrag,
                         onDragEnd = onDragEnd,
+                        onDragCancel = onDragCancel,
                         onMenuDismiss = onMenuDismiss,
                     ),
                 contentAlignment = Alignment.Center
@@ -460,6 +454,7 @@ fun CourseCard(
         // 静止卡不挂 graphicsLayer：几十张×两页的合成层是左右滑 draw 热点。
         // 仅按压/拖拽/落地涟漪动画时挂；松手即撤，缩放回弹让位给无层路径。
         val needTransformLayer = sinkPressed || sinkActive || isDragging || rippleAnimating
+        // 纯色模式（无壁纸）不画描边：底色本身就和页面背景分得开，那圈线只会显脏
         Box(
             modifier = modifier
                 .fillMaxWidth()
@@ -508,6 +503,7 @@ fun CourseCard(
                 .courseCardGesture(
                     course = course,
                     touchState = touchState,
+                    coordinates = cardCoords,
                     bounds = cardBoundsPx,
                     refreshBounds = refreshCardBounds,
                     scope = scope,
@@ -518,6 +514,7 @@ fun CourseCard(
                     onDragStart = onDragStart,
                     onDrag = onDrag,
                     onDragEnd = onDragEnd,
+                    onDragCancel = onDragCancel,
                     onMenuDismiss = onMenuDismiss,
                 )
         ) {
@@ -559,6 +556,7 @@ fun CourseCard(
 private fun Modifier.courseCardGesture(
     course: Course,
     touchState: ScheduleTouchState?,
+    coordinates: Array<LayoutCoordinates?>,
     bounds: FloatArray,
     refreshBounds: () -> Unit,
     scope: CoroutineScope,
@@ -569,6 +567,7 @@ private fun Modifier.courseCardGesture(
     onDragStart: () -> Unit,
     onDrag: (offsetX: Float, offsetY: Float) -> Unit,
     onDragEnd: () -> Unit,
+    onDragCancel: () -> Unit,
     onMenuDismiss: () -> Unit,
 ): Modifier = pointerInput(course, dragEnabled) {
     awaitEachGesture {
@@ -581,6 +580,24 @@ private fun Modifier.courseCardGesture(
         var isLongPress = false
         var isDragging = false
         var menuShown = false
+        // 拖拽已经接管 / 已经收过尾。节点被回收时 finally 只兜底一次，正常松手不重复收尾。
+        var dragOwned = false
+        var dragClosed = false
+
+        /**
+         * 指针位置换算到 root 坐标。
+         *
+         * ⚠ 浮层挂在 root 上、锚点 [bounds] 也是 root 坐标，而 [PointerInputChange.position]
+         * 是**课卡本地**坐标。课卡住在周 pager 的页里：翻周（页平移一屏）、页内上下滚，
+         * 手指不动本地坐标也会变 —— 直接拿本地差值会让浮层反向飞出一屏（翻页即「丢失」），
+         * 上下滚则越拖越偏（不跟手）。换算到 root 后只剩手指自身位移。
+         */
+        fun rootPosition(local: Offset): Offset {
+            val coords = coordinates[0]
+            return if (coords != null && coords.isAttached) coords.localToRoot(local) else local
+        }
+
+        val downRoot = rootPosition(downPosition)
         val longPressJob = scope.launch {
             delay(320.milliseconds)
             // 多指（三指截图等）不当成长按
@@ -597,44 +614,84 @@ private fun Modifier.courseCardGesture(
                 val pass =
                     if (menuShown || isDragging) PointerEventPass.Main else PointerEventPass.Final
                 val event = awaitPointerEvent(pass)
+                // 只认按下时那根指针：其余手指的事件不消费，留给页面翻周手势
+                // （跨周调课要一只手拖课、另一只手翻周）
+                val change = event.changes.firstOrNull { it.id == down.id }
+                if (change == null) {
+                    // 指针不在事件里 = 被系统取消（翻页时合成 cancel / 手势被抢）。
+                    // 必须收尾，否则浮层 offset 冻在最后一帧、卡在屏幕外。
+                    if (dragOwned && !dragClosed) {
+                        dragClosed = true
+                        val st = touchState
+                        val trackerOwns = st != null &&
+                            (st.dragTrackerActive || st.dragEndHandled)
+                        if (!trackerOwns) onDragCancel()
+                    }
+                    break
+                }
 
-                if (event.changes.none { it.pressed }) {
+                if (!change.pressed) {
                     onSinkChange(false)
                     when {
-                        isDragging -> if (menuShown) onDrag(0f, 0f) else onDragEnd()
+                        isDragging -> {
+                            // 页面级 tracker 已接管 / 已收尾：位移与落点都归它，
+                            // 这里再调一次 onDragEnd 会把同一次拖拽写两遍
+                            val st = touchState
+                            val trackerOwns = st != null &&
+                                (st.dragTrackerActive || st.dragEndHandled)
+                            when {
+                                trackerOwns -> dragClosed = true
+                                menuShown -> {
+                                    // 菜单还在、还没到「真拖起来」：把抖动带出的偏移归零，菜单继续留着
+                                    onDrag(0f, 0f)
+                                    dragClosed = true
+                                }
+
+                                !dragClosed -> {
+                                    dragClosed = true
+                                    onDragEnd()
+                                }
+                            }
+                        }
+
                         menuShown -> Unit
                         else -> {
-                            val up = event.changes.firstOrNull()
-                            if (up != null) {
-                                up.consume()
-                                // 多指时不点击：系统手势（三指截图）拦截后 Compose 会补发一个
-                                // 合成的「全部抬起」事件，看起来和松手一样，只能靠页面级多指标记区分
-                                val multiTouch = touchState?.multiTouch == true
-                                if (!isLongPress && !multiTouch &&
-                                    (up.position - downPosition).getDistance() < slop
-                                ) onClick()
-                            }
+                            val up = change
+                            up.consume()
+                            // 多指时不点击：系统手势（三指截图）拦截后 Compose 会补发一个
+                            // 合成的「全部抬起」事件，看起来和松手一样，只能靠页面级多指标记区分
+                            val multiTouch = touchState?.multiTouch == true
+                            if (!isLongPress && !multiTouch &&
+                                (up.position - downPosition).getDistance() < slop
+                            ) onClick()
                         }
                     }
                     break
                 }
 
-                val pos = event.changes.firstOrNull()?.position ?: continue
-                val dx = pos.x - downPosition.x
-                val dy = pos.y - downPosition.y
-                val moved = pos.minus(downPosition).getDistance()
+                val pos = change.position
+                // 长按前用本地位移：页面惯性/另只手滚屏时内容在手指下跑，
+                // 本地坐标能如实反映「手指相对卡片动了」，避免把滚动当成长按/拖拽。
+                val localDx = pos.x - downPosition.x
+                val localDy = pos.y - downPosition.y
+                val localMoved = Offset(localDx, localDy).getDistance()
+                // 长按后（真拖拽）用 root 位移：翻周/滚动时本地坐标会被整页平移污染
+                val rootNow = rootPosition(pos)
+                val dx = rootNow.x - downRoot.x
+                val dy = rootNow.y - downRoot.y
+                val moved = Offset(dx, dy).getDistance()
 
                 // 长按前横滑主导 → 交给 Pager 翻页
                 if (!isLongPress && !isDragging && !menuShown &&
-                    abs(dx) > horizontalSlop && abs(dx) > abs(dy) * 1.2f
+                    abs(localDx) > horizontalSlop && abs(localDx) > abs(localDy) * 1.2f
                 ) {
                     onSinkChange(false)
                     break
                 }
                 // 长按前位移超容差 → 取消长按
-                if (!isLongPress && moved > slop) {
+                if (!isLongPress && localMoved > slop) {
                     onSinkChange(false)
-                    event.changes.forEach { it.consume() }
+                    change.consume()
                     break
                 }
                 // 菜单已弹出：手指一动就进「拖拽态」，浮层开始跟手。
@@ -643,19 +700,53 @@ private fun Modifier.courseCardGesture(
                 // ⚠ dragEnabled = false（自定义时间课）时整段跳过：菜单留在原地等用户点
                 if (dragEnabled && menuShown && !isDragging) {
                     isDragging = true
+                    dragOwned = true
                     onSinkChange(false)
+                    // 登记拖拽占用的指针：翻页手势只屏蔽这一根，另一只手仍能翻周
+                    val st = touchState
+                    if (st != null) {
+                        // 起拖前的根坐标：tracker 用它把位移算成「相对按下时」，
+                        // 这样交接触手时浮层不会跳。翻转/滚动都不影响 root 差值。
+                        st.draggingPointerId = down.id
+                        st.draggingCourseId = course.id
+                        st.draggingDownRoot = downRoot
+                        st.dragStarted = false
+                        st.dragTrackerActive = false
+                        st.dragEndHandled = false
+                    }
                 }
                 // 位移超容差 = 真的拖起来了：此刻收菜单，并点亮跟手高光
                 if (dragEnabled && menuShown && moved > slop) {
                     menuShown = false
+                    touchState?.dragStarted = true
                     onDragStart()
                     onMenuDismiss()
                 }
-                if (dragEnabled && isDragging) onDrag(dx, dy)
-                event.changes.forEach { it.consume() }
+                // 页面级 tracker 接管后，卡片不再上报位移（两边都算会翻倍）
+                if (dragEnabled && isDragging && touchState?.dragTrackerActive != true) {
+                    onDrag(dx, dy)
+                }
+                change.consume()
             }
         } finally {
             longPressJob.cancel()
+            // 课卡所在周页被 pager 回收时协程直接 cancel，走不到上面的抬起分支：
+            // 浮层不收尾会永远停在最后一帧。页面级 tracker 还活着时由它收尾（它能跨周跟手），
+            // 只有 tracker 没接管才在这里兜底；且只取消、不写库。
+            if (dragOwned && !dragClosed) {
+                dragClosed = true
+                val st = touchState
+                val trackerOwns = st != null &&
+                    (st.dragTrackerActive || st.dragEndHandled)
+                if (!trackerOwns) onDragCancel()
+            }
+            val state = touchState
+            if (state != null &&
+                !state.dragTrackerActive && !state.dragEndHandled &&
+                state.draggingPointerId == down.id
+            ) {
+                state.clearDragTracking()
+            }
         }
     }
 }
@@ -803,7 +894,8 @@ private fun CardContent(
                     .clip(RoundedCornerShape(4.dp))
                     .background(badgeBackground)
                     .padding(horizontal = 2.dp, vertical = 1.dp),
-                maxLines = 1
+                maxLines = 1,
+                textAlign = TextAlign.End,
             )
         }
 
@@ -818,7 +910,8 @@ private fun CardContent(
                     .clip(RoundedCornerShape(4.dp))
                     .background(textColor.copy(alpha = 0.1f))
                     .padding(horizontal = 4.dp, vertical = 1.dp),
-                maxLines = 1
+                maxLines = 1,
+                textAlign = TextAlign.Center,
             )
             Text(
                 // 跨午夜标注「次日」，否则 23:00 / 00:30 两个角标看着像两节课
@@ -835,7 +928,8 @@ private fun CardContent(
                     .clip(RoundedCornerShape(4.dp))
                     .background(textColor.copy(alpha = 0.1f))
                     .padding(horizontal = 4.dp, vertical = 1.dp),
-                maxLines = 1
+                maxLines = 1,
+                textAlign = TextAlign.Center,
             )
         }
     }
@@ -867,4 +961,56 @@ internal class OutlineCache {
     var layoutDirection: LayoutDirection =
         LayoutDirection.Ltr
     var outline: Outline? = null
+}
+
+/** 课表内元素（课程卡 / 午休晚休分界线 / 空槽加号卡）的纯色描边宽度 */
+internal val SCHEDULE_OUTLINE_WIDTH = 2.dp
+/** 纯色描边 alpha */
+private const val SCHEDULE_OUTLINE_ALPHA = 0.08f
+/** 底色饱和度低于此值视为中性（白 / 浅灰 / 深灰），描边改用黑或白 */
+private const val SCHEDULE_OUTLINE_NEUTRAL_S = 0.08f
+
+/**
+ * 课表内元素的纯色描边颜色。
+ *
+ * 有色底（课程色）→ 同色淡描边，保留课程色的体积感；中性底（分界线、加号卡、
+ * 非动态取色）→ 浅色黑、深色白，否则同色描边在白/灰底上完全看不见。
+ */
+internal fun scheduleOutlineColor(baseColor: Color, isDark: Boolean): Color {
+    val v = maxOf(baseColor.red, maxOf(baseColor.green, baseColor.blue))
+    val minC = minOf(baseColor.red, minOf(baseColor.green, baseColor.blue))
+    val saturation = if (v > 0f) (v - minC) / v else 0f
+    return when {
+        saturation > SCHEDULE_OUTLINE_NEUTRAL_S -> baseColor.copy(alpha = SCHEDULE_OUTLINE_ALPHA)
+        isDark -> Color.White.copy(alpha = SCHEDULE_OUTLINE_ALPHA)
+        else -> Color.Black.copy(alpha = SCHEDULE_OUTLINE_ALPHA)
+    }
+}
+
+/**
+ * 纯色描边（不发光、不采样，就是一次 [drawOutline]），复用 [OutlineCache] 避免每帧重建。
+ *
+ * 在 `drawWithContent { drawContent(); drawScheduleOutline(...) }` 里调用，描边压在内容之上。
+ * 注意 `drawBackdrop` 之后调用时外半圈会被它的 shape clip 裁掉，实际呈现为内描边。
+ */
+internal fun DrawScope.drawScheduleOutline(
+    cache: OutlineCache,
+    cornerRadius: Dp,
+    color: Color,
+    strokeWidthPx: Float,
+    layoutDirection: LayoutDirection,
+) {
+    if (cache.width != size.width ||
+        cache.height != size.height ||
+        cache.radius != cornerRadius.value ||
+        cache.layoutDirection != layoutDirection
+    ) {
+        cache.outline = ContinuousRoundedRectangle(cornerRadius)
+            .createOutline(size, layoutDirection, this)
+        cache.width = size.width
+        cache.height = size.height
+        cache.radius = cornerRadius.value
+        cache.layoutDirection = layoutDirection
+    }
+    drawOutline(outline = cache.outline!!, color = color, style = Stroke(strokeWidthPx))
 }

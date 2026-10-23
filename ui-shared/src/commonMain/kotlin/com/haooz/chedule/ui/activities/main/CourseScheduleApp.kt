@@ -76,6 +76,7 @@ import com.haooz.chedule.viewmodel.scheduleViewModel
 import com.haooz.chedule.viewmodel.settingsViewModel
 import com.haooz.chedule.viewmodel.shiftViewModel
 import com.kyant.backdrop.Backdrop
+import com.kyant.backdrop.backdrops.rememberCombinedBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
@@ -89,6 +90,7 @@ import top.yukonga.miuix.kmp.layout.isTabletWidth
 import top.yukonga.miuix.kmp.layout.rememberSharedScrollBehavior
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import kotlin.math.abs
+import kotlin.math.roundToInt
 import kotlin.time.Duration.Companion.milliseconds
 
 /**
@@ -205,6 +207,13 @@ fun CourseScheduleApp(
 
         isDark = isAppDarkTheme()
         liquidGlassBackdrop = rememberLayerBackdrop()
+        // 顶栏/底栏各自再录一层：两者都在内容层之上，只有把它们也录进来，
+        // 「比底栏更高一层」的组合采样层才成立
+        topBarSampleBackdrop = rememberLayerBackdrop()
+        bottomBarSampleBackdrop = rememberLayerBackdrop()
+        overlayGlassBackdrop = rememberCombinedBackdrop(
+            liquidGlassBackdrop, topBarSampleBackdrop, bottomBarSampleBackdrop
+        )
         // 供今日/课程表卡片玻璃采样：录的是共享壁纸层，不是页内透明占位
         sharedWallpaperBackdrop = rememberLayerBackdrop()
 
@@ -525,9 +534,19 @@ fun CourseScheduleApp(
             lastAutoPage = autoAdvancePage
         }
 
-        // 切 tab 时强制放掉周 pager 上可能残留的 scroll 锁。
+        // 切 tab 时强制放掉 pager 上可能残留的 scroll 锁。
+        // 周 pager 与今日页 pager 走的是同一套 pagerAxisTakeoverGesture，锁泄漏家族相同：
+        // 今日页锁一旦泄漏，切回今日后左右滑就彻底失效（只能重进应用）。
         LaunchedEffect(mainPagerState.currentPage) {
             runCatching { pagerState.scroll(MutatePriority.PreventUserInput) { } }
+            runCatching {
+                // 抢占会把未完成的 settle 动画一起掐掉，落点可能停在两页之间，补一次吸附
+                todayPagerState.scroll(MutatePriority.PreventUserInput) { }
+                val visual =
+                    todayPagerState.currentPage + todayPagerState.currentPageOffsetFraction
+                val target = visual.roundToInt()
+                if (abs(visual - target) > 0.001f) todayPagerState.scrollToPage(target)
+            }
         }
 
         // 今日页默认选中今天：等价于原来的 remember { mutableIntStateOf(currentDayOfWeek) }

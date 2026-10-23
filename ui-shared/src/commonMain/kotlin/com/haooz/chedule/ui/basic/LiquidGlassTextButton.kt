@@ -6,7 +6,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Text
+import com.haooz.chedule.ui.components.text.material.Text as Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -24,6 +24,7 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.kyant.backdrop.edgelight.edgeLight
@@ -101,7 +102,7 @@ fun LiquidGlassTextButton(
             vibrancy()
             blur(glassBlur.dp.toPx())
             // 均衡及以下关闭折射
-            if (chromeLens) lens(10f.dp.toPx(), 40f.dp.toPx())
+            if (chromeLens) lens(6f.dp.toPx(), 36f.dp.toPx())
         }
     }
     val buttonOnDrawSurface: androidx.compose.ui.graphics.drawscope.DrawScope.() -> Unit =
@@ -201,7 +202,11 @@ fun LiquidGlassTextButton(
                 text = text,
                 style = MiuixTheme.textStyles.button,
                 fontWeight = FontWeight.Medium,
-                color = textColor.copy(alpha = if (enabled) 1f else 0.4f)
+                color = textColor.copy(alpha = if (enabled) 1f else 0.4f),
+                // 文案本身居中（父 Box 的 contentAlignment）。这里必须**显式**告诉文字过渡容器：
+                // 父级的对齐方式在测量期看不到，不传就按左对齐落位 —— 文案变长时旧字会先贴到
+                // 变宽盒子的左边缘再滑回来（「测试实时活动」↔「测试小米超级岛」就差一个字，最明显）。
+                textAlign = TextAlign.Center,
             )
         }
     }

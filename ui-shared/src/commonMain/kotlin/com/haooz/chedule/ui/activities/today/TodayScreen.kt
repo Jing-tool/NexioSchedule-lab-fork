@@ -38,7 +38,7 @@ import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.PagerState
-import androidx.compose.material3.Text
+import com.haooz.chedule.ui.components.text.material.Text as Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -228,12 +228,14 @@ fun BlurCard(
                         Modifier.edgeLight(
                             shape = ContinuousRoundedRectangle(cornerRadius),
                             edgeLight = defaultEdgeLight,
-                            fadeAlpha = { glassPerfFactor() })
+                            fadeAlpha = { glassPerfFactor() },
+                        )
                     } else
                         Modifier.edgeLight(
                             shape = ContinuousRoundedRectangle(cornerRadius),
                             edgeLight = rememberCardEdgeLight(baseColor = if (isDark) Color.Black else Color.White),
-                            fadeAlpha = { glassPerfFactor() })
+                            fadeAlpha = { glassPerfFactor() },
+                        )
                 )
         ) {
             content()
@@ -424,7 +426,8 @@ private fun CourseItemContent(course: Course, sectionTimes: Map<Int, String>, pa
             Text(
                 text = timeRange,
                 style = MiuixTheme.textStyles.footnote1.copy(fontSize = 15.sp),
-                color = MiuixTheme.colorScheme.primary
+                color = MiuixTheme.colorScheme.primary,
+                textAlign = TextAlign.End,
             )
             Spacer(modifier = Modifier.height(6.dp))
             Text(
@@ -433,7 +436,8 @@ private fun CourseItemContent(course: Course, sectionTimes: Map<Int, String>, pa
                 color = when (courseStatus) {
                     "进行中" -> MiuixTheme.colorScheme.primary
                     else -> MiuixTheme.colorScheme.onSurfaceVariantActions
-                }
+                },
+                textAlign = TextAlign.End,
             )
         }
     }

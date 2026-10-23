@@ -20,7 +20,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.Text
+import com.haooz.chedule.ui.components.text.material.Text as Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -351,7 +351,8 @@ private fun PodiumColumn(
                     fontSize = if (rank == 1) 30.sp else 24.sp,
                     fontWeight = FontWeight.Medium,
                     color = accent,
-                    lineHeight = if (rank == 1) 32.sp else 26.sp
+                    lineHeight = if (rank == 1) 32.sp else 26.sp,
+                    textAlign = TextAlign.Center,
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
@@ -561,7 +562,8 @@ private fun AppreciationListItem(item: AppreciationItem) {
             text = item.amount,
             fontSize = 16.sp,
             fontWeight = FontWeight.Medium,
-            color = MiuixTheme.colorScheme.primary
+            color = MiuixTheme.colorScheme.primary,
+            textAlign = TextAlign.End,
         )
     }
 }

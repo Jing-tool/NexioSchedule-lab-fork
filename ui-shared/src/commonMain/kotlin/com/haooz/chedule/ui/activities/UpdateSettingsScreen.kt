@@ -2,6 +2,8 @@
 package com.haooz.chedule.ui.activities
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.ui.text.style.TextAlign
+import com.haooz.chedule.ui.components.CardExpand
 import com.haooz.chedule.data.AppStorage
 import com.haooz.chedule.data.NoopUpdateController
 import com.haooz.chedule.data.UpdateController
@@ -20,7 +22,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.material3.Text
+import com.haooz.chedule.ui.components.text.material.Text as Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -267,7 +269,7 @@ fun UpdateSettingsScreen(
                                 )
                             }
 
-                            if (hasUpdate && latestRelease != null) {
+                            CardExpand(visible = hasUpdate && latestRelease != null) {
                                 Column(
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -279,10 +281,10 @@ fun UpdateSettingsScreen(
                                         fontSize = 14.sp,
                                         color = MiuixTheme.colorScheme.onSurfaceVariantActions
                                     )
-                                    if (latestRelease!!.body.isNotBlank()) {
+                                    CardExpand(visible = latestRelease?.body?.isNotBlank() == true) {
                                         Spacer(modifier = Modifier.height(4.dp))
                                         Text(
-                                            text = latestRelease!!.body.take(200),
+                                            text = latestRelease?.body?.take(200).orEmpty(),
                                             fontSize = 13.sp,
                                             color = MiuixTheme.colorScheme.onSurfaceVariantActions
                                         )
@@ -510,7 +512,8 @@ fun UpdateSettingsScreen(
                         Text(
                             text = "${(downloadProgress * 100).toInt()}%",
                             fontSize = 14.sp,
-                            color = MiuixTheme.colorScheme.onSurfaceVariantActions
+                            color = MiuixTheme.colorScheme.onSurfaceVariantActions,
+                            textAlign = TextAlign.Center,
                         )
                     } else if (downloadComplete) {
                         Spacer(modifier = Modifier.height(0.dp))
@@ -624,6 +627,8 @@ fun UpdateSettingsScreen(
                                     text = if (isResolvingApk) "获取链接" else "正在下载",
                                     fontSize = 16.sp,
                                     fontWeight = FontWeight.Medium,
+                                    // 按钮自己居中内容，换字时按中心收放
+                                    textAlign = TextAlign.Center,
                                     color = if (isAppDarkTheme()) ComposeColor.White else ComposeColor.Black
                                 )
                             }

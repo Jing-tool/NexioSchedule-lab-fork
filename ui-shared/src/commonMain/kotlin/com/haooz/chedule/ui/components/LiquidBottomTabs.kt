@@ -36,6 +36,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
@@ -137,10 +138,6 @@ fun LiquidBottomTabs(
     val defaultEdgeLight = rememberDefaultEdgeLight(baseColor = containerColor)
 
     val tabsBackdrop = rememberLayerBackdrop()
-    // 高光自己的 export 层：胶囊采样它，玻璃里才会同时看到「底栏 + 光晕」，
-    // 两者被同一套 lens 一起折射 → 轮廓天然一致。
-    // 注意：捕获层带 ColorFilter.tint(accentColor)，高光不能塞进去（浅色会被染黑）。
-    val glowBackdrop = rememberLayerBackdrop()
 
     BoxWithConstraints(
         modifier,
@@ -220,9 +217,11 @@ fun LiquidBottomTabs(
         val panelEffects: com.kyant.backdrop.BackdropEffectScope.() -> Unit = remember(chromeLens, glassBlur) {
             {
                 vibrancy()
-                blur(glassBlur.dp.toPx())
+                // Mirror：Clamp（blur 默认）会把胶囊边缘的采样钳到最外一行，边缘一圈模糊退化
+                blur(glassBlur.dp.toPx(), TileMode.Mirror)
+                padding = 0f
                 // 均衡及以下：低栏背景板关闭折射
-                if (chromeLens) lens(12f.dp.toPx(), 48f.dp.toPx())
+                if (chromeLens) lens(6f.dp.toPx(), 36f.dp.toPx())
             }
         }
         val panelSurface: androidx.compose.ui.graphics.drawscope.DrawScope.() -> Unit =
@@ -271,7 +270,8 @@ fun LiquidBottomTabs(
                             val progress = dampedDragAnimation.pressProgress
                             vibrancy()
                             // 捕获层与可见层用同一个模糊，否则滑块放大时玻璃底不一致
-                            blur(glassBlur.dp.toPx())
+                            blur(glassBlur.dp.toPx(), TileMode.Mirror)
+                            padding = 0f
                             lens(
                                 24f.dp.toPx() * progress,
                                 24f.dp.toPx() * progress
@@ -294,20 +294,6 @@ fun LiquidBottomTabs(
             )
         }
 
-        Box(
-            Modifier
-                .fillMaxSize()
-                .layerBackdrop(glowBackdrop)
-                .graphicsLayer {
-                    translationX = panelOffset
-                    val progress = dampedDragAnimation.pressProgress
-                    val s = lerp(1f, 1f + 16f.dp.toPx() / size.width, progress)
-                    scaleX = s
-                    scaleY = s
-                }
-                .clip(ContinuousCapsule())
-        )
-
         // 胶囊（纯视觉）
         Box(
             Modifier
@@ -318,9 +304,9 @@ fun LiquidBottomTabs(
                         else size.width - (dampedDragAnimation.value + 1f) * tabWidth + panelOffset
                 }
                 .drawBackdrop(
-                    // 页面 + 捕获层（底栏图标）+ 高光：高光排最后 → 叠在最上面，
-                    // 且它自身除光晕外全透明，不会遮掉前两层
-                    backdrop = rememberCombinedBackdrop(backdrop, tabsBackdrop, glowBackdrop),
+                    // 页面 + 捕获层（底栏图标，含 tint 高光）：高光在捕获层里随 lens
+                    // 一起折射，轮廓天然一致
+                    backdrop = rememberCombinedBackdrop(backdrop, tabsBackdrop),
                     shape = { ContinuousCapsule() },
                     effects = {
                         val progress = dampedDragAnimation.pressProgress

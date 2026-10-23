@@ -11,14 +11,15 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.asPaddingValues
-import androidx.compose.foundation.layout.captionBar
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.union
@@ -69,6 +70,7 @@ import top.yukonga.miuix.kmp.material.LocalGlassDialogBlurDp
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.anim.DecelerateEasing
 import top.yukonga.miuix.kmp.anim.folmeSpring
+import top.yukonga.miuix.kmp.basic.MotionAwareText
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.overlay.OverlayDialog
 import top.yukonga.miuix.kmp.squircle.squircleSurface
@@ -78,8 +80,6 @@ import top.yukonga.miuix.kmp.utils.rememberNavigationBack
 import top.yukonga.miuix.kmp.utils.LocalPredictiveBackEnabled
 import top.yukonga.miuix.kmp.theme.LocalScreenCornerRadius
 import top.yukonga.miuix.kmp.utils.getRoundedCorner
-import top.yukonga.miuix.kmp.utils.Platform
-import top.yukonga.miuix.kmp.utils.platform
 import top.yukonga.miuix.kmp.window.WindowDialog
 
 /**
@@ -332,24 +332,28 @@ internal fun DialogContent(
     val currentOnDismiss by rememberUpdatedState(onDismissRequest)
 
     val safeDrawingInsets = WindowInsets.safeDrawing
+    // 底部 inset 不在这里吃：贴底弹窗的底部间距统一交给下面的 bottomOutsideMargin 算，
+    // 否则导航栏高度会被 windowInsetsPadding 和它各加一次。
     val dialogInsets = if (topInset != null) {
-        safeDrawingInsets.union(WindowInsets(top = topInset))
+        safeDrawingInsets.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal)
+            .union(WindowInsets(top = topInset))
     } else {
-        safeDrawingInsets
+        safeDrawingInsets.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal)
     }
 
-    // Predictive-back translation pad (small-screen only). Pre-converted to px so the per-frame
-    // graphicsLayer block does not call asPaddingValues() / toPx() each invalidation.
-    val bottomPadding = if (isLargeScreen) {
-        0.dp
+    // 贴底弹窗的底部间距，与底部浮动导航栏同一套算法
+    val bottomOutsideMargin = if (isLargeScreen) {
+        outsideMargin.height
     } else {
-        WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() +
-            WindowInsets.captionBar.asPaddingValues().calculateBottomPadding()
+        maxOf(
+            WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 2.dp,
+            22.dp,
+        )
     }
-    // iOS：贴底弹窗距屏幕底**只留安全区**
-    val bottomOutsideMargin = if (platform() == Platform.IOS && !isLargeScreen) 0.dp else outsideMargin.height
-    val extraBottomPaddingPx = remember(density, bottomPadding, bottomOutsideMargin, isLargeScreen) {
-        if (isLargeScreen) 0f else with(density) { (bottomPadding + bottomOutsideMargin).toPx() }
+    // 预测返回时把弹窗推出屏幕的额外位移 = 它到屏幕底的距离（dialogInsets 已不吃底部）。
+    // 预转成 px，避免 graphicsLayer block 每帧调 toPx()。
+    val extraBottomPaddingPx = remember(density, bottomOutsideMargin, isLargeScreen) {
+        if (isLargeScreen) 0f else with(density) { bottomOutsideMargin.toPx() }
     }
 
     val contentModifier = modifier
@@ -391,7 +395,7 @@ internal fun DialogContent(
                         vibrancy()
                         blur(dialogBlur.dp.toPx())
                         // 折射：参数与下拉面板展开态同档（面板类玻璃）
-                        if (chromeLens) lens(16f.dp.toPx(), 64f.dp.toPx())
+                        if (chromeLens) lens(6f.dp.toPx(), 36f.dp.toPx())
                     },
                     highlight = null,
                 )
@@ -441,7 +445,7 @@ internal fun DialogContent(
             modifier = contentModifier.align(contentAlignment),
         ) {
             title?.let {
-                Text(
+                MotionAwareText(
                     modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
                     text = it,
                     fontSize = MiuixTheme.textStyles.title4.fontSize,
@@ -451,7 +455,7 @@ internal fun DialogContent(
                 )
             }
             summary?.let {
-                Text(
+                MotionAwareText(
                     modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
                     text = it,
                     fontSize = MiuixTheme.textStyles.body1.fontSize,

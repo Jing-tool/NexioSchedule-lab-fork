@@ -1,5 +1,6 @@
 package com.haooz.chedule.ui.components
 
+import androidx.compose.ui.text.style.TextAlign
 import com.haooz.chedule.data.AppStorage
 import com.haooz.chedule.data.NexioLog
 import androidx.compose.foundation.layout.Arrangement
@@ -32,7 +33,7 @@ import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.LinearProgressIndicator
-import top.yukonga.miuix.kmp.basic.Text
+import com.haooz.chedule.ui.components.text.miuix.Text as Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.overlay.OverlayDialog
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -60,6 +61,11 @@ private const val FORK_RELEASES_URL = "https://gitee.com/jing494/nexio-schedule_
 fun UpdateDialog(
     updateController: UpdateController = NoopUpdateController,
     liquidGlassBackdrop: com.kyant.backdrop.Backdrop? = null,
+    /**
+     * 显隐回传：主界面据此决定要不要挂顶栏/底栏那两层采样层（本弹窗自己管 show，
+     * 外面读不到）。晚一帧无所谓——弹窗是淡入的，第一帧采样层还没就位看不出来。
+     */
+    onShowChanged: ((Boolean) -> Unit)? = null,
 ) {
     val hapticFeedback = LocalHapticFeedback.current
     val coroutineScope = rememberCoroutineScope()
@@ -68,6 +74,7 @@ fun UpdateDialog(
 
     val updatePrefs = remember { AppStorage.store("update_settings") }
     var showUpdateDialog by remember { mutableStateOf(false) }
+    LaunchedEffect(showUpdateDialog) { onShowChanged?.invoke(showUpdateDialog) }
     var updateTagName by remember { mutableStateOf("") }
     var updateBody by remember { mutableStateOf("") }
     var hasDownloadedApk by remember { mutableStateOf(false) }
@@ -278,7 +285,8 @@ fun UpdateDialog(
                     Text(
                         text = "${(downloadProgress * 100).toInt()}%",
                         fontSize = 14.sp,
-                        color = MiuixTheme.colorScheme.onSurfaceVariantActions
+                        color = MiuixTheme.colorScheme.onSurfaceVariantActions,
+                        textAlign = TextAlign.Center,
                     )
                 }
             } else if (isInstalling) {
@@ -330,6 +338,8 @@ fun UpdateDialog(
                         text = primaryLabel,
                         fontSize = 16.sp,
                         fontWeight = FontWeight.Medium,
+                        // 按钮自己把内容居中：文案在「立即更新 / 下载中 / 安装」之间换字时按中心收放
+                        textAlign = TextAlign.Center,
                         color = if (isDownloading || isInstalling) {
                             MiuixTheme.colorScheme.onSurfaceVariantActions
                         } else {

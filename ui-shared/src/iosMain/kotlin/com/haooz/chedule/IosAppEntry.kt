@@ -267,6 +267,11 @@ internal fun NexioIosNavigation(host: IosAppHost) {
     val router = host.router
     val mainTransition = host.mainTransition
     val consented by PrivacyConsent.consented.collectAsState()
+    // 与 Android MainActivity 对齐：隐私弹窗挂在 AppNavHost 之上，
+    // 全文页在栈上时撤掉弹窗遮罩，否则全文页读不了也滑不动。
+    // ⚠ iOS 的「隐私政策」是**原生文档页**（isNativeDocument），被 nativeRouteHandler 吃掉了、
+    // 不进 router.routes —— 只能问 nativePageIds。
+    val policyPageVisible = host.nativeRouteIds.any { it == AppRoute.PrivacyPolicy.id }
     CompositionLocalProvider(LocalAppRouter provides router) {
         Box(Modifier.fillMaxSize()) {
             AppNavHost(
@@ -294,6 +299,7 @@ internal fun NexioIosNavigation(host: IosAppHost) {
                         platform.posix.exit(0)
                     },
                     onOpenPolicy = { router.navigate(AppRoute.PrivacyPolicy) },
+                    policyPageVisible = policyPageVisible,
                 )
             }
         }
@@ -346,7 +352,6 @@ internal fun NexioIosRouteContent(router: AppRouter, route: AppRoute) {
         AppRoute.WidgetIntro -> WidgetIntroRoute(
             router,
             onRequestWidgetRefresh = { IosWidgetSnapshot.refresh() },
-            isIos = true,
         )
         // Course reminders: local notifications for pre-class and tomorrow's summary.
         // Gaps vs Android (docs/KMP_IOS_MIGRATION_PLAN.md §7):

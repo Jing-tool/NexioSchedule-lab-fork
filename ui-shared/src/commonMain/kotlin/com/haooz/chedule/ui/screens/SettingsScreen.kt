@@ -14,7 +14,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.material3.Text
+import androidx.compose.ui.text.style.TextAlign
+import com.haooz.chedule.ui.components.CardExpand
+import com.haooz.chedule.ui.components.text.material.Text as Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -279,7 +281,8 @@ fun SettingsScreen(
                                     Text(
                                         text = classStartTime,
                                         fontSize = 14.5.sp,
-                                        color = MiuixTheme.colorScheme.onSurfaceVariantActions
+                                        color = MiuixTheme.colorScheme.onSurfaceVariantActions,
+                                        textAlign = TextAlign.End,
                                     )
                                 },
                                 onClick = {
@@ -303,7 +306,8 @@ fun SettingsScreen(
                                             else -> "第${currentWeek}周"
                                         },
                                         fontSize = 14.5.sp,
-                                        color = MiuixTheme.colorScheme.onSurfaceVariantActions
+                                        color = MiuixTheme.colorScheme.onSurfaceVariantActions,
+                                        textAlign = TextAlign.End,
                                     )
                                 },
                                 onClick = {
@@ -320,7 +324,8 @@ fun SettingsScreen(
                                     Text(
                                         text = "共${totalWeeks}周",
                                         fontSize = 14.5.sp,
-                                        color = MiuixTheme.colorScheme.onSurfaceVariantActions
+                                        color = MiuixTheme.colorScheme.onSurfaceVariantActions,
+                                        textAlign = TextAlign.End,
                                     )
                                 },
                                 onClick = {
@@ -338,7 +343,7 @@ fun SettingsScreen(
                                 onCheckedChange = { settingsViewModel.setSmartWeekend(it) }
                             )
 
-                            if (!isShiftMode) {
+                            CardExpand(visible = !isShiftMode) {
                                 SwitchPreference(
                                     title = "显示非本周课程",
                                     checked = showNonCurrentWeek,
@@ -554,7 +559,7 @@ fun SettingsScreen(
                                     }
                                 )
                                 // iOS 走 App Store 更新 → 宿主传 showUpdateSettings=false，入口整个不渲染
-                                if (showUpdateSettings) {
+                                CardExpand(visible = showUpdateSettings) {
                                     ArrowPreference(
                                         title = "更新设置",
                                         onClick = {

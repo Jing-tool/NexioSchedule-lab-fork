@@ -14,7 +14,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
-import androidx.compose.material3.Text
+import androidx.compose.ui.text.style.TextAlign
+import com.haooz.chedule.ui.components.text.material.Text as Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
@@ -138,7 +139,8 @@ fun WeekDayRangeSelector(
                         selected -> Color.White
                         occupied -> MiuixTheme.colorScheme.onSurface.copy(alpha = 0.25f)
                         else -> MiuixTheme.colorScheme.onSurface
-                    }
+                    },
+                    textAlign = TextAlign.Center,
                 )
             }
         }

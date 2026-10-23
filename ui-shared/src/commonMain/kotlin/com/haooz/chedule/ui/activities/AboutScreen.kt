@@ -1,10 +1,7 @@
 package com.haooz.chedule.ui.activities
 
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -33,7 +30,8 @@ import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.material3.Text
+import com.haooz.chedule.ui.components.CardExpand
+import com.haooz.chedule.ui.components.text.material.Text as Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
@@ -249,7 +247,6 @@ fun AboutScreen(
             // 内嵌到 pad 设置页右栏时，About 仍自绘顶栏糊层/遮罩/标题，仅隐藏返回按钮
             ProgressiveBlurTopBar(
                 backdrop = liquidGlassBackdrop,
-                tintIntensity = scrollProgress * 0.2f,
                 topInsetAdjustment = nativeBarInset,
                 noTopStatusBar = hostVerticalBarEdge(),
             ) {
@@ -259,8 +256,6 @@ fun AboutScreen(
                     showLargeTitle = false,
                     showSmallTitle = scrollProgress > 0.5f,
                     showShadow = scrollProgress >= 1f,
-                    // 关于页渐变遮罩保持随滚动显隐
-                    gradientOverlayScrollTriggered = true,
                     modifier = Modifier.windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal)),
                     scrollBehavior = scrollBehavior,
                     contentPadding = {},
@@ -582,11 +577,7 @@ fun AboutScreen(
                                                 tint = MiuixTheme.colorScheme.onSurfaceVariantActions
                                             )
                                         }
-                                        AnimatedVisibility(
-                                            visible = expandedStates[index].value,
-                                            enter = expandVertically(),
-                                            exit = shrinkVertically()
-                                        ) {
+                                        CardExpand(visible = expandedStates[index].value) {
                                             Column(
                                                 modifier = Modifier.padding(
                                                     start = 18.dp,
@@ -705,11 +696,7 @@ fun AboutScreen(
                                         )
                                     }
                                     Spacer(modifier = Modifier.height(4.dp))
-                                    AnimatedVisibility(
-                                        visible = expanded,
-                                        enter = expandVertically(),
-                                        exit = shrinkVertically()
-                                    ) {
+                                    CardExpand(visible = expanded) {
                                         Column {
                                             Spacer(modifier = Modifier.height(16.dp))
                                             Row(

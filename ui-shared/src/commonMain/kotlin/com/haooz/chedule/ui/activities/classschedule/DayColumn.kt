@@ -18,7 +18,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.material3.Text
+import com.haooz.chedule.ui.components.text.material.Text as Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -34,9 +34,7 @@ import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawOutline
 import androidx.compose.ui.graphics.drawscope.DrawScope
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.hapticfeedback.HapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
@@ -58,7 +56,6 @@ import com.haooz.chedule.data.SpecialBlock
 import com.haooz.chedule.data.SpecialItem
 import com.kyant.backdrop.edgelight.edgeLight
 import com.haooz.chedule.ui.utils.glassPerfFactor
-import com.haooz.chedule.ui.utils.rememberCourseCardEdgeLight
 import com.kyant.backdrop.Backdrop
 import com.kyant.backdrop.backdrops.SharedBlurBackdrop
 import com.kyant.backdrop.drawBackdrop
@@ -123,11 +120,12 @@ fun DayColumn(
     showClassroom: Boolean = true,
     showTeacher: Boolean = true,
     cardRefraction: CardRefractionLevel = CardRefractionLevel.DEFAULT,
-    draggingCourseIds: Set<String> = emptySet(),
+    draggingCourseSlots: Set<Pair<String, Int>> = emptySet(),
     onCourseLongPress: (course: Course, cardLeft: Float, cardTop: Float, width: Float, height: Float, backdrop: Backdrop?, currentWeek: Int) -> Unit = { _, _, _, _, _, _, _ -> },
     onCourseDragStart: (courseId: String) -> Unit = { _ -> },
     onCourseDrag: (courseId: String, offsetX: Float, offsetY: Float) -> Unit = { _, _, _ -> },
     onCourseDragEnd: (courseId: String) -> Unit = { _ -> },
+    onCourseDragCancel: (courseId: String) -> Unit = { _ -> },
     onCourseMenuDismiss: () -> Unit = {},
     // 当前列需高亮的节次范围（含起止）
     dropHighlightSections: IntRange? = null,
@@ -287,6 +285,7 @@ fun DayColumn(
                         isDark = isDark,
                         cardCornerRadius = cardCornerRadius,
                         cardBlurRadius = cardBlurRadius,
+                        cardRefraction = cardRefraction,
                         wallpaperBackdrop = wallpaperBackdrop,
                         hapticFeedback = hapticFeedback,
                         onEmptyClick = onEmptyClick
@@ -322,7 +321,7 @@ fun DayColumn(
                 wallpaperBackdrop = wallpaperBackdrop,
                 solidBackingColor = solidBackingColor,
                 cardBlurRadius = cardBlurRadius,
-                draggingCourseIds = draggingCourseIds,
+                draggingCourseSlots = draggingCourseSlots,
                 touchState = touchState,
                 isDark = isDark,
 
@@ -331,6 +330,7 @@ fun DayColumn(
                 onCourseDragStart = onCourseDragStart,
                 onCourseDrag = onCourseDrag,
                 onCourseDragEnd = onCourseDragEnd,
+                onCourseDragCancel = onCourseDragCancel,
                 onCourseMenuDismiss = onCourseMenuDismiss,
                 onPendingChange = onPendingChange
             )
@@ -366,7 +366,7 @@ private fun CourseCardsLayer(
     wallpaperBackdrop: Backdrop?,
     solidBackingColor: Color? = null,
     cardBlurRadius: Float,
-    draggingCourseIds: Set<String>,
+    draggingCourseSlots: Set<Pair<String, Int>>,
     touchState: ScheduleTouchState? = null,
     isDark: Boolean,
     viewportTopDp: Float = 0f,
@@ -376,6 +376,7 @@ private fun CourseCardsLayer(
     onCourseDragStart: (String) -> Unit,
     onCourseDrag: (String, Float, Float) -> Unit,
     onCourseDragEnd: (String) -> Unit,
+    onCourseDragCancel: (String) -> Unit,
     onCourseMenuDismiss: () -> Unit,
     onPendingChange: (Int, Int) -> Unit
 ) {
@@ -452,7 +453,7 @@ private fun CourseCardsLayer(
     courseRenderDataList.forEach { renderData ->
         val course = renderData.course
         val isCurrentWeekCourse = renderData.isCurrentWeekCourse
-        val isDragging = course.id in draggingCourseIds && isCurrentWeekCourse
+        val isDragging = (course.id to currentWeek) in draggingCourseSlots && isCurrentWeekCourse
 
         // 自定义时间课按时间轴插值定位/定高，不按节次分段
         if (course.hasValidCustomTime()) {
@@ -573,6 +574,9 @@ private fun CourseCardsLayer(
                         onDragEnd = {
                             onCourseDragEnd(course.id)
                         },
+                        onDragCancel = {
+                            onCourseDragCancel(course.id)
+                        },
                         onMenuDismiss = {
                             onCourseMenuDismiss()
                         }
@@ -589,6 +593,7 @@ private fun PendingSectionBox(
     isDark: Boolean,
     cardCornerRadius: Float,
     cardBlurRadius: Float,
+    cardRefraction: CardRefractionLevel,
     wallpaperBackdrop: Backdrop?,
     hapticFeedback: HapticFeedback,
     onEmptyClick: (Int) -> Unit
@@ -602,20 +607,29 @@ private fun PendingSectionBox(
         if (hasBlur) {
             key(cardCornerRadius) {
                 val backdropShape = remember(cardCornerRadius) { ContinuousRoundedRectangle(cardCornerRadius.dp) }
-                val edgeLightShape = remember(cardCornerRadius) { ContinuousRoundedRectangle(cardCornerRadius.dp) }
                 val density = LocalDensity.current
+                val outlineColor = remember(isDark) { scheduleOutlineColor(pendingColor, isDark) }
+                val outlineWidthPx = remember(density) { with(density) { SCHEDULE_OUTLINE_WIDTH.toPx() } }
+                val outlineCache = remember { OutlineCache() }
                 val blurPx = with(density) { remember(cardBlurRadius) { cardBlurRadius.dp.toPx() } }
                 val surfaceColor = if (MiuixTheme.isDynamicColor) {
                     MiuixTheme.colorScheme.surfaceContainerHigh.copy(alpha = if (isDark) 0.64f else 0.5f)
                 } else if (isDark) Color(0xFF242424).copy(alpha = 0.64f) else Color(0xFFF0F0F0).copy(alpha = 0.5f)
                 val isSharedBlur = wallpaperBackdrop is SharedBlurBackdrop
-                val pendingEffects: BackdropEffectScope.() -> Unit = remember(isSharedBlur, blurPx) {
-                    {
-                        if (!isSharedBlur) {
-                            blur(blurPx)
+                // 折射与课程卡同一套档位参数（跟随「卡片折射」设置）
+                val lensRadiusPx = with(density) { remember(cardRefraction) { cardRefraction.lensRadiusDp.dp.toPx() } }
+                val lensStrengthPx = with(density) { remember(cardRefraction) { cardRefraction.lensStrengthDp.dp.toPx() } }
+                val pendingEffects: BackdropEffectScope.() -> Unit =
+                    remember(isSharedBlur, blurPx, lensRadiusPx, lensStrengthPx, cardRefraction) {
+                        {
+                            if (!isSharedBlur) {
+                                blur(blurPx)
+                            }
+                            if (cardRefraction != CardRefractionLevel.OFF) {
+                                lens(lensRadiusPx, lensStrengthPx)
+                            }
                         }
                     }
-                }
                 val pendingOnSurface: DrawScope.() -> Unit = remember(surfaceColor) {
                     { drawRect(surfaceColor) }
                 }
@@ -632,11 +646,16 @@ private fun PendingSectionBox(
                             viewport = LocalBackdropViewport.current,
                             onDrawSurface = pendingOnSurface
                         )
-                        .edgeLight(
-                            shape = edgeLightShape,
-                            edgeLight = rememberCourseCardEdgeLight(baseColor = surfaceColor),
-                            fadeAlpha = { glassPerfFactor() }
-                        )
+                        .drawWithContent {
+                            drawContent()
+                            drawScheduleOutline(
+                                cache = outlineCache,
+                                cornerRadius = cardCornerRadius.dp,
+                                color = outlineColor,
+                                strokeWidthPx = outlineWidthPx,
+                                layoutDirection = layoutDirection,
+                            )
+                        }
                 ) {
                     Card(
                         modifier = Modifier.fillMaxSize(),
@@ -666,6 +685,7 @@ private fun PendingSectionBox(
                 }
             }
         } else {
+            // 纯色模式（无壁纸）不画描边，与课程卡一致
             Card(
                 modifier = Modifier
                     .fillMaxSize()
@@ -845,7 +865,6 @@ fun SpecialBandOverlay(
     if (hasBlur && wallpaperBackdrop != null) {
         key(effectiveCornerRadius) {
             val backdropShape = remember(effectiveCornerRadius) { ContinuousRoundedRectangle(effectiveCornerRadius.dp) }
-            val edgeLightShape = remember(effectiveCornerRadius) { ContinuousRoundedRectangle(effectiveCornerRadius.dp) }
             val density = LocalDensity.current
             val blurPx = with(density) { remember(cardBlurRadius) { cardBlurRadius.dp.toPx() } }
             val lensRadiusPx = with(density) { remember(cardRefraction) { cardRefraction.lensRadiusDp.dp.toPx() } }
@@ -881,8 +900,8 @@ fun SpecialBandOverlay(
             val onBandSurface: DrawScope.() -> Unit = remember(bandSurfaceColor) {
                 { drawRect(bandSurfaceColor) }
             }
-            val outlineColor = remember(bgColor) { bgColor.copy(alpha = 0.05f) }
-            val outlineStroke = remember(density) { Stroke(with(density) { 2.dp.toPx() }) }
+            val outlineColor = remember(bgColor, isDark) { scheduleOutlineColor(bgColor, isDark) }
+            val outlineWidthPx = remember(density) { with(density) { SCHEDULE_OUTLINE_WIDTH.toPx() } }
             val outlineCache = remember { OutlineCache() }
             Box(
                 modifier = Modifier
@@ -899,30 +918,14 @@ fun SpecialBandOverlay(
                     )
                     .drawWithContent {
                         drawContent()
-                        val radiusDp = effectiveCornerRadius.dp
-                        if (outlineCache.width != size.width ||
-                            outlineCache.height != size.height ||
-                            outlineCache.radius != radiusDp.value ||
-                            outlineCache.layoutDirection != layoutDirection
-                        ) {
-                            outlineCache.outline = ContinuousRoundedRectangle(radiusDp)
-                                .createOutline(size, layoutDirection, this)
-                            outlineCache.width = size.width
-                            outlineCache.height = size.height
-                            outlineCache.radius = radiusDp.value
-                            outlineCache.layoutDirection = layoutDirection
-                        }
-                        drawOutline(
-                            outline = outlineCache.outline!!,
+                        drawScheduleOutline(
+                            cache = outlineCache,
+                            cornerRadius = effectiveCornerRadius.dp,
                             color = outlineColor,
-                            style = outlineStroke
+                            strokeWidthPx = outlineWidthPx,
+                            layoutDirection = layoutDirection,
                         )
                     }
-                    .edgeLight(
-                        shape = edgeLightShape,
-                        edgeLight = rememberCourseCardEdgeLight(baseColor = bgColor),
-                        fadeAlpha = { glassPerfFactor() }
-                    )
             ) {
                 SpecialBandBody(
                     name = shownName,
@@ -935,6 +938,7 @@ fun SpecialBandOverlay(
             }
         }
     } else {
+        // 纯色模式（无壁纸）不画描边，与课程卡一致
         Box(
             modifier = Modifier
                 .fillMaxSize()
